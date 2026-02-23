@@ -19,10 +19,12 @@ const PASSWORD = AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
 
 const bridgeClient = new BridgeClient();
 
-/** Connect to the bridge lazily (on first tool call). */
+/** Connect to the bridge lazily (on first tool call). Resets if connection drops. */
 let connectPromise: Promise<void> | null = null;
 export function ensureConnected(): Promise<void> {
   if (bridgeClient.session) return Promise.resolve();
+  // Reset promise if session was lost (reconnection in progress)
+  connectPromise = null;
   if (!connectPromise) {
     connectPromise = (async () => {
       let token: string;

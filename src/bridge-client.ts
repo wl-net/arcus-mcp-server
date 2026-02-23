@@ -45,6 +45,7 @@ interface BridgeMessage {
 const REQUEST_TIMEOUT_MS = 30_000;
 const SOURCE = "CLNT:mcp:1";
 const MAX_EVENT_BUFFER = 100;
+const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 const debug = !!process.env.ARCUS_DEBUG;
 function log(msg: string): void {
@@ -61,6 +62,11 @@ export class BridgeClient {
   private _session: SessionInfo | null = null;
   private _activePlaceId: string | null = null;
   private _events: BridgeEvent[] = [];
+
+  private _baseUrl: string | null = null;
+  private _reconnecting = false;
+  private _reconnectAttempt = 0;
+  private _intentionalClose = false;
 
   get session(): SessionInfo | null {
     return this._session;
@@ -133,7 +139,16 @@ export class BridgeClient {
       throw new Error("No auth token available. Call login() first.");
     }
 
-    const wsUrl = baseUrl.replace(/^http/, "ws") + "/androidbus";
+    this._baseUrl = baseUrl;
+    this.token = authToken;
+    this._intentionalClose = false;
+
+    return this._doConnect();
+  }
+
+  private _doConnect(): Promise<SessionInfo> {
+    const authToken = this.token!;
+    const wsUrl = this._baseUrl!.replace(/^http/, "ws") + "/androidbus";
     dbg(`WebSocket connecting to ${wsUrl}`);
 
     return new Promise((resolve, reject) => {
@@ -143,6 +158,7 @@ export class BridgeClient {
 
       this.ws.on("open", () => {
         log("WebSocket connected");
+        this._reconnectAttempt = 0;
       });
 
       this.ws.on("ping", (data) => {
@@ -173,6 +189,18 @@ export class BridgeClient {
             places: attrs.places as Place[],
           };
           log(`Session created — personId=${this._session.personId}, ${this._session.places.length} place(s)`);
+
+          // Re-set active place after reconnect
+          if (this._reconnecting && this._activePlaceId) {
+            const placeId = this._activePlaceId;
+            log(`Reconnected — re-setting active place ${placeId}`);
+            this.sendRequest("SERV:sess:", "sess:SetActivePlace", { placeId }).then(
+              () => log("Active place restored after reconnect"),
+              (err) => log(`Failed to restore active place: ${err.message}`),
+            );
+          }
+          this._reconnecting = false;
+
           resolve(this._session);
           return;
         }
@@ -211,8 +239,35 @@ export class BridgeClient {
           settled = true;
           reject(new Error("WebSocket closed before SessionCreated"));
         }
+
+        this._session = null;
+
+        // Auto-reconnect unless intentionally closed
+        if (!this._intentionalClose && this._baseUrl && this.token) {
+          this._scheduleReconnect();
+        }
       });
     });
+  }
+
+  private _scheduleReconnect(): void {
+    const delay = RECONNECT_DELAYS[Math.min(this._reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+    this._reconnectAttempt++;
+    this._reconnecting = true;
+    log(`Reconnecting in ${delay / 1000}s (attempt ${this._reconnectAttempt})...`);
+
+    setTimeout(() => {
+      if (this._intentionalClose) return;
+      this._doConnect().then(
+        () => log("Reconnected successfully"),
+        (err) => {
+          log(`Reconnect failed: ${err.message}`);
+          if (!this._intentionalClose) {
+            this._scheduleReconnect();
+          }
+        },
+      );
+    }, delay);
   }
 
   sendRequest(
@@ -264,6 +319,7 @@ export class BridgeClient {
   }
 
   disconnect(): void {
+    this._intentionalClose = true;
     if (this.ws) {
       this.ws.close();
       this.ws = null;

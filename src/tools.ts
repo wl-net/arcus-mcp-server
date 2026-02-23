@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BridgeClient } from "./bridge-client.js";
 
 const SESS_DEST = "SERV:sess:";
+const WRITE_ENABLED = !!process.env.ARCUS_ENABLE_WRITE;
 
 // Destructive message types that should never be sent
 const BLOCKED_MESSAGE_TYPES = new Set([
@@ -141,6 +142,13 @@ function summarizeRule(r: Record<string, unknown>): unknown {
     state: r["rule:state"],
     template: r["rule:template"],
   };
+}
+
+const WRITE_BLOCKED_MSG = "Write operations are disabled. Set ARCUS_ENABLE_WRITE=1 to enable device commands, alarm control, and other actions.";
+
+function requireWrite(): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  if (WRITE_ENABLED) return null;
+  return { content: [{ type: "text" as const, text: WRITE_BLOCKED_MSG }], isError: true };
 }
 
 export function registerTools(
@@ -299,6 +307,8 @@ export function registerTools(
         .describe("Command attributes as key-value pairs"),
     },
     async ({ deviceAddress, commandName, attributes }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       if (BLOCKED_MESSAGE_TYPES.has(commandName)) {
         return { content: [{ type: "text", text: `Blocked: "${commandName}" is a destructive operation and is not allowed.` }], isError: true };
@@ -334,6 +344,8 @@ export function registerTools(
       ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
     },
     async ({ ruleAddress }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const resp = await client.sendRequest(ruleAddress, "rule:Delete", {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload, null, 2) }] };
@@ -429,6 +441,8 @@ export function registerTools(
         .describe("Template variable mappings (e.g. {\"button\": \"DRIV:dev:abc-123\"})"),
     },
     async ({ templateId, name, description, context }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const placeId = client.activePlaceId;
       if (!placeId) {
@@ -492,6 +506,8 @@ export function registerTools(
       bypass: z.boolean().default(false).describe("Bypass triggered devices if arming fails (default false)"),
     },
     async ({ mode, bypass }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const placeId = client.activePlaceId;
       if (!placeId) {
@@ -524,6 +540,8 @@ export function registerTools(
     "Disarm the alarm at the active place",
     {},
     async () => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const placeId = client.activePlaceId;
       if (!placeId) {
@@ -552,6 +570,8 @@ export function registerTools(
     "Reboot the hub at the active place. The hub will go offline temporarily.",
     {},
     async () => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const hubResp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
       const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
@@ -587,6 +607,8 @@ export function registerTools(
     "Execute (fire) a scene",
     { sceneAddress: z.string().describe("Scene address (e.g. SERV:scene:abc-123)") },
     async ({ sceneAddress }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       const resp = await client.sendRequest(sceneAddress, "scene:Fire", {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
@@ -627,6 +649,8 @@ export function registerTools(
         .describe("Message attributes"),
     },
     async ({ destination, messageType, attributes }) => {
+      const blocked = requireWrite();
+      if (blocked) return blocked;
       await ensureConnected();
       if (BLOCKED_MESSAGE_TYPES.has(messageType)) {
         return { content: [{ type: "text", text: `Blocked: "${messageType}" is a destructive operation and is not allowed.` }], isError: true };
