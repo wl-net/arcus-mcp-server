@@ -62,6 +62,7 @@ export class BridgeClient {
   private _session: SessionInfo | null = null;
   private _activePlaceId: string | null = null;
   private _events: BridgeEvent[] = [];
+  private _productCatalog: Map<string, { batterySize: string; batteryNum: number }> | null = null;
 
   private _baseUrl: string | null = null;
   private _reconnecting = false;
@@ -81,8 +82,30 @@ export class BridgeClient {
     return `SERV:place:${this._activePlaceId}`;
   }
 
+  get productCatalog(): Map<string, { batterySize: string; batteryNum: number }> | null {
+    return this._productCatalog;
+  }
+
   setActivePlace(placeId: string): void {
     this._activePlaceId = placeId;
+  }
+
+  async fetchProductCatalog(): Promise<void> {
+    if (this._productCatalog) return;
+    const resp = await this.sendRequest("SERV:prodcat:", "prodcat:GetProducts", {});
+    const products = resp.payload.attributes.products as Array<Record<string, unknown>> | undefined;
+    const catalog = new Map<string, { batterySize: string; batteryNum: number }>();
+    if (products) {
+      for (const p of products) {
+        const id = p["product:id"] as string | undefined;
+        const size = p["product:batteryPrimSize"] as string | undefined;
+        const num = p["product:batteryPrimNum"] as number | undefined;
+        if (id && size && size !== "NONE") {
+          catalog.set(id, { batterySize: size, batteryNum: num ?? 1 });
+        }
+      }
+    }
+    this._productCatalog = catalog;
   }
 
   /** Drain all buffered events, returning and clearing the buffer. */

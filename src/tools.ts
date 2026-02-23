@@ -74,7 +74,7 @@ function summarizePerson(attrs: Record<string, unknown>): unknown {
   };
 }
 
-function summarizeDevice(d: Record<string, unknown>): unknown {
+function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { batterySize: string; batteryNum: number }> | null): unknown {
   const caps = d["base:caps"] as string[] | undefined;
   const summary: Record<string, unknown> = {
     name: d["dev:name"],
@@ -103,6 +103,13 @@ function summarizeDevice(d: Record<string, unknown>): unknown {
   if (caps?.includes("pres")) summary.presence = d["pres:presence"];
   if (caps?.includes("devpow") && d["devpow:source"] === "BATTERY") {
     summary.battery = d["devpow:battery"];
+    if (catalog) {
+      const productId = d["dev:productId"] as string | undefined;
+      if (productId) {
+        const info = catalog.get(productId);
+        if (info) summary.batteryType = `${info.batteryNum}x ${info.batterySize}`;
+      }
+    }
   }
 
   return summary;
@@ -281,9 +288,13 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, "place:ListDevices", {});
+      const [resp] = await Promise.all([
+        client.sendRequest(client.placeDestination, "place:ListDevices", {}),
+        client.fetchProductCatalog(),
+      ]);
       const devices = resp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
-      const summary = devices ? devices.map(summarizeDevice) : resp.payload.attributes;
+      const catalog = client.productCatalog;
+      const summary = devices ? devices.map((d) => summarizeDevice(d, catalog)) : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
     }
   );
@@ -319,6 +330,8 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
+      await client.fetchProductCatalog();
+      const catalog = client.productCatalog;
       const results = await Promise.all(
         deviceAddresses.map(async (addr) => {
           try {
@@ -326,7 +339,7 @@ export function registerTools(
             if (resp.payload.messageType === "Error") {
               return { address: addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
             }
-            return { ...(summarizeDevice(resp.payload.attributes) as Record<string, unknown>), address: addr };
+            return { ...(summarizeDevice(resp.payload.attributes, catalog) as Record<string, unknown>), address: addr };
           } catch (err) {
             return { address: addr, error: (err as Error).message };
           }
