@@ -186,7 +186,7 @@ export function registerTools(
         "person:ListAvailablePlaces",
         {}
       );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.places, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.places) }] };
     }
   );
 
@@ -223,7 +223,7 @@ export function registerTools(
         subsystems: subs?.map((s) => s["subs:name"]) ?? [],
       };
 
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -249,7 +249,7 @@ export function registerTools(
             longMessage: e.longMessage,
           }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -275,7 +275,7 @@ export function registerTools(
             hasLogin: p["person:hasLogin"],
           }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -295,7 +295,7 @@ export function registerTools(
       const devices = resp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
       const catalog = client.productCatalog;
       const summary = devices ? devices.map((d) => summarizeDevice(d, catalog)) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -313,7 +313,7 @@ export function registerTools(
         "base:GetAttributes",
         {}
       );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     }
   );
 
@@ -345,7 +345,7 @@ export function registerTools(
           }
         })
       );
-      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(results) }] };
     }
   );
 
@@ -375,7 +375,7 @@ export function registerTools(
         return { content: [{ type: "text", text: `Blocked: "${commandName}" is a destructive operation and is not allowed.` }], isError: true };
       }
       const resp = await client.sendRequest(deviceAddress, commandName, attributes);
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -385,15 +385,14 @@ export function registerTools(
     "List all rules at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest("SERV:rule:", "rule:ListRules", { placeId });
       const rules = resp.payload.attributes.rules as Array<Record<string, unknown>> | undefined;
       const summary = rules ? rules.map(summarizeRule) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -411,7 +410,7 @@ export function registerTools(
       if (blocked) return blocked;
       await ensureConnected();
       const resp = await client.sendRequest(ruleAddress, "rule:Delete", {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -423,16 +422,15 @@ export function registerTools(
       category: z.string().optional().describe("Filter by category name (e.g. \"Security Alarm\", \"Doors & Locks\"). Omit to list categories."),
     },
     async ({ category }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
 
       if (!category) {
         // Return categories and counts
         const resp = await client.sendRequest("SERV:rule:", "rule:GetCategories", { placeId });
-        return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.categories, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.categories) }] };
       }
 
       // Return templates filtered by category
@@ -448,7 +446,7 @@ export function registerTools(
               premium: t["ruletmpl:premium"],
             }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -460,11 +458,10 @@ export function registerTools(
       templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
     },
     async ({ templateId }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:ruletmpl:${templateId}`,
         "ruletmpl:Resolve",
@@ -472,7 +469,7 @@ export function registerTools(
       );
       const selectors = resp.payload.attributes.selectors as Record<string, unknown> | undefined;
       if (!selectors) {
-        return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
       }
       // Summarize selectors: show name/address pairs for LIST types
       const summary: Record<string, unknown> = {};
@@ -487,7 +484,7 @@ export function registerTools(
           summary[key] = sel;
         }
       }
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -504,19 +501,18 @@ export function registerTools(
         .describe("Template variable mappings (e.g. {\"button\": \"DRIV:dev:abc-123\"})"),
     },
     async ({ templateId, name, description, context }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:ruletmpl:${templateId}`,
         "ruletmpl:CreateRule",
         { placeId, name, description, context }
       );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -526,11 +522,10 @@ export function registerTools(
     "List alarm incidents at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:subalarm:${placeId}`,
         "subalarm:ListIncidents",
@@ -538,7 +533,7 @@ export function registerTools(
       );
       const incidents = resp.payload.attributes.incidents as Array<Record<string, unknown>> | undefined;
       const summary = incidents ? incidents.map(summarizeIncident) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -548,15 +543,14 @@ export function registerTools(
     "List all scenes at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest("SERV:scene:", "scene:ListScenes", { placeId });
       const scenes = resp.payload.attributes.scenes as Array<Record<string, unknown>> | undefined;
       const summary = scenes ? scenes.map(summarizeScene) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
 
@@ -569,13 +563,12 @@ export function registerTools(
       bypass: z.boolean().default(false).describe("Bypass triggered devices if arming fails (default false)"),
     },
     async ({ mode, bypass }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const dest = `SERV:subalarm:${placeId}`;
       const msgType = bypass ? "subalarm:ArmBypassed" : "subalarm:Arm";
       const resp = await client.sendRequest(dest, msgType, { mode });
@@ -593,7 +586,7 @@ export function registerTools(
         }
       }
 
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -603,15 +596,14 @@ export function registerTools(
     "Disarm the alarm at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(`SERV:subalarm:${placeId}`, "subalarm:Disarm", {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Alarm disarmed." : JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Alarm disarmed." : JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -625,7 +617,7 @@ export function registerTools(
       if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
-      return { content: [{ type: "text", text: JSON.stringify(summarizeHub(resp.payload.attributes), null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summarizeHub(resp.payload.attributes)) }] };
     }
   );
 
@@ -648,7 +640,7 @@ export function registerTools(
       const hubAddress = hub["base:address"] as string;
       const hubId = hub["base:id"] as string;
       const resp = await client.sendRequest(hubAddress, "hubadv:Reboot", {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Hub ${hubId} is rebooting.` : JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Hub ${hubId} is rebooting.` : JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -658,13 +650,12 @@ export function registerTools(
     "List all subsystems at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
-      const placeId = client.activePlaceId;
-      if (!placeId) {
-        return { content: [{ type: "text", text: "No active place set. Call set_active_place first." }], isError: true };
-      }
+      const placeId = client.activePlaceId!;
       const resp = await client.sendRequest("SERV:subs:", "subs:ListSubsystems", { placeId });
-      return { content: [{ type: "text", text: JSON.stringify(summarizeSubsystems(resp.payload.attributes), null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(summarizeSubsystems(resp.payload.attributes)) }] };
     }
   );
 
@@ -695,7 +686,7 @@ export function registerTools(
       return {
         content: [{
           type: "text",
-          text: `Pairing mode active${productId ? ` (searching for product ${productId})` : ""}. Hub is now searching for devices.\n${JSON.stringify(searchResp.payload, null, 2)}`,
+          text: `Pairing mode active${productId ? ` (searching for product ${productId})` : ""}. Hub is now searching for devices.\n${JSON.stringify(searchResp.payload)}`,
         }],
       };
     }
@@ -713,7 +704,7 @@ export function registerTools(
       if (blocked) return blocked;
       await ensureConnected();
       const resp = await client.sendRequest(sceneAddress, "scene:Fire", {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -760,7 +751,7 @@ export function registerTools(
       );
       const careCount = events.length - filtered.length;
       const header = careCount > 0 ? `${filtered.length} events (${careCount} care/safety events filtered):\n` : "";
-      return { content: [{ type: "text", text: header + JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: header + JSON.stringify(summary) }] };
     }
   );
 
@@ -792,7 +783,7 @@ export function registerTools(
         source: e.source,
         attributes: e.attributes,
       }));
-      return { content: [{ type: "text", text: `${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary, null, 2)}` }] };
+      return { content: [{ type: "text", text: `${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary)}` }] };
     }
   );
 
@@ -816,7 +807,7 @@ export function registerTools(
         return { content: [{ type: "text", text: `Blocked: "${messageType}" is a destructive operation and is not allowed.` }], isError: true };
       }
       const resp = await client.sendRequest(destination, messageType, attributes);
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
 }
