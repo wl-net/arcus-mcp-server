@@ -112,10 +112,14 @@ Two-phase flow after authentication:
 | Message | Destination | Attributes |
 |---------|-------------|------------|
 | `base:GetAttributes` | `DRIV:dev:<id>` | `{}` |
-| `swit:SetAttributes` | `DRIV:dev:<id>` | `{"swit:state": "ON"\|"OFF"}` |
-| `dim:SetAttributes` | `DRIV:dev:<id>` | `{"dim:brightness": 0-100}` |
-| `doorlock:SetAttributes` | `DRIV:dev:<id>` | `{"doorlock:lockstate": "LOCKED"\|"UNLOCKED"}` |
-| `therm:SetAttributes` | `DRIV:dev:<id>` | `{"therm:heatsetpoint": temp, "therm:coolsetpoint": temp}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"swit:state": "ON"\|"OFF"}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"dim:brightness": 0-100}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"doorlock:lockstate": "LOCKED"\|"UNLOCKED"}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"therm:heatsetpoint": temp, "therm:coolsetpoint": temp}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"shade:level": 0-100}` (0=closed, 100=open) |
+| `shade:GoToOpen` | `DRIV:dev:<id>` | `{}` |
+| `shade:GoToClose` | `DRIV:dev:<id>` | `{}` |
+| `ident:Identify` | `DRIV:dev:<id>` | `{}` (flash LED on supported devices) |
 
 ### Hub
 | Message | Destination | Attributes |

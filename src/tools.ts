@@ -146,9 +146,16 @@ function summarizeRule(r: Record<string, unknown>): unknown {
 
 const WRITE_BLOCKED_MSG = "Write operations are disabled. Set ARCUS_ENABLE_WRITE=1 to enable device commands, alarm control, and other actions.";
 
-function requireWrite(): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+type ToolError = { content: Array<{ type: "text"; text: string }>; isError: true };
+
+function requireWrite(): ToolError | null {
   if (WRITE_ENABLED) return null;
   return { content: [{ type: "text" as const, text: WRITE_BLOCKED_MSG }], isError: true };
+}
+
+function requirePlace(client: BridgeClient): ToolError | null {
+  if (client.activePlaceId) return null;
+  return { content: [{ type: "text" as const, text: "No active place set. Call set_active_place first." }], isError: true };
 }
 
 export function registerTools(
@@ -220,6 +227,8 @@ export function registerTools(
       limit: z.number().default(10).describe("Number of entries to return (default 10)"),
     },
     async ({ limit }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(client.placeDestination, "place:ListHistoryEntries", { limit });
       const results = resp.payload.attributes.results as Array<Record<string, unknown>> | undefined;
@@ -242,6 +251,8 @@ export function registerTools(
     "List all persons at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(client.placeDestination, "place:ListPersons", {});
       const persons = resp.payload.attributes.persons as Array<Record<string, unknown>> | undefined;
@@ -266,6 +277,8 @@ export function registerTools(
     "List all devices at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(client.placeDestination, "place:ListDevices", {});
       const devices = resp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
@@ -280,6 +293,8 @@ export function registerTools(
     "Get full state and attributes of a specific device",
     { deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)") },
     async ({ deviceAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(
         deviceAddress,
@@ -290,14 +305,44 @@ export function registerTools(
     }
   );
 
+  // ── get_devices ──────────────────────────────────────────────────────
+  server.tool(
+    "get_devices",
+    "Get full state and attributes of multiple devices in one call",
+    {
+      deviceAddresses: z
+        .array(z.string())
+        .describe("Array of device addresses (e.g. [\"DRIV:dev:abc-123\", \"DRIV:dev:def-456\"])"),
+    },
+    async ({ deviceAddresses }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const results = await Promise.all(
+        deviceAddresses.map(async (addr) => {
+          try {
+            const resp = await client.sendRequest(addr, "base:GetAttributes", {});
+            if (resp.payload.messageType === "Error") {
+              return { address: addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
+            }
+            return { ...(summarizeDevice(resp.payload.attributes) as Record<string, unknown>), address: addr };
+          } catch (err) {
+            return { address: addr, error: (err as Error).message };
+          }
+        })
+      );
+      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+    }
+  );
+
   // ── device_command ───────────────────────────────────────────────────
   server.tool(
     "device_command",
     `Send a command to a device. Examples:
-- Turn on switch: commandName="swit:SetAttributes", attributes={"swit:state":"ON"}
-- Lock door: commandName="doorlock:SetAttributes", attributes={"doorlock:lockstate":"LOCKED"}
-- Set thermostat: commandName="therm:SetAttributes", attributes={"therm:heatsetpoint":72}
-- Dim light: commandName="dim:SetAttributes", attributes={"dim:brightness":50}`,
+- Turn on switch: commandName="base:SetAttributes", attributes={"swit:state":"ON"}
+- Lock door: commandName="base:SetAttributes", attributes={"doorlock:lockstate":"LOCKED"}
+- Set thermostat: commandName="base:SetAttributes", attributes={"therm:heatsetpoint":72}
+- Dim light: commandName="base:SetAttributes", attributes={"dim:brightness":50}`,
     {
       deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
       commandName: z.string().describe("Command message type (e.g. swit:SetAttributes)"),
@@ -307,6 +352,8 @@ export function registerTools(
         .describe("Command attributes as key-value pairs"),
     },
     async ({ deviceAddress, commandName, attributes }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
@@ -344,6 +391,8 @@ export function registerTools(
       ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
     },
     async ({ ruleAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
@@ -558,6 +607,8 @@ export function registerTools(
     "Get hub status at the active place",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       await ensureConnected();
       const resp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
       return { content: [{ type: "text", text: JSON.stringify(summarizeHub(resp.payload.attributes), null, 2) }] };
@@ -570,6 +621,8 @@ export function registerTools(
     "Reboot the hub at the active place. The hub will go offline temporarily.",
     {},
     async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
@@ -601,12 +654,47 @@ export function registerTools(
     }
   );
 
+  // ── search_devices (pairing) ────────────────────────────────────────
+  server.tool(
+    "search_devices",
+    "Put the hub into pairing/search mode to find new or reconnecting devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
+    {
+      productId: z.string().optional().describe("Product catalog ID to search for (e.g. \"7b8fd3\"). Omit to search for all devices."),
+    },
+    async ({ productId }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const placeId = client.activePlaceId!;
+      const dest = `SERV:subpairing:${placeId}`;
+      const attrs: Record<string, unknown> = {};
+      if (productId) attrs.productAddress = `SERV:product:${productId}`;
+
+      const startResp = await client.sendRequest(dest, "subpairing:StartPairing", attrs);
+      const searchResp = await client.sendRequest(dest, "subpairing:Search", {
+        ...attrs,
+        form: {},
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: `Pairing mode active${productId ? ` (searching for product ${productId})` : ""}. Hub is now searching for devices.\n${JSON.stringify(searchResp.payload, null, 2)}`,
+        }],
+      };
+    }
+  );
+
   // ── fire_scene ───────────────────────────────────────────────────────
   server.tool(
     "fire_scene",
     "Execute (fire) a scene",
     { sceneAddress: z.string().describe("Scene address (e.g. SERV:scene:abc-123)") },
     async ({ sceneAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
@@ -618,21 +706,79 @@ export function registerTools(
   // ── list_events ─────────────────────────────────────────────────────
   server.tool(
     "list_events",
-    "Drain buffered platform events (device state changes, alarm triggers, etc.) received since the last call. Returns and clears the buffer.",
+    "Drain buffered platform events (device state changes, alarm triggers, etc.) received since the last call. Returns and clears the buffer. Excludes noisy subcare/subsafety events — use list_care_status for those.",
     {},
     async () => {
       await ensureConnected();
       const events = client.drainEvents();
-      if (events.length === 0) {
-        return { content: [{ type: "text", text: "No new events." }] };
+      // Filter out subcare/subsafety noise
+      const CARE_PREFIXES = ["subcare:", "subsafety:"];
+      const filtered = events.filter(
+        (e) => !CARE_PREFIXES.some((p) => e.messageType.startsWith(p))
+      );
+      if (filtered.length === 0) {
+        return { content: [{ type: "text", text: `No new events. (${events.length - filtered.length} care/safety events filtered)` }] };
       }
-      const summary = events.map((e) => ({
+      // Group consecutive identical event types for conciseness
+      const grouped: Array<{ type: string; source?: string; count: number; firstSeen: string; lastSeen: string; attributes: Record<string, unknown> }> = [];
+      for (const e of filtered) {
+        const last = grouped[grouped.length - 1];
+        if (last && last.type === e.messageType && last.source === e.source) {
+          last.count++;
+          last.lastSeen = new Date(e.timestamp).toISOString();
+          last.attributes = e.attributes; // keep latest
+        } else {
+          grouped.push({
+            type: e.messageType,
+            source: e.source,
+            count: 1,
+            firstSeen: new Date(e.timestamp).toISOString(),
+            lastSeen: new Date(e.timestamp).toISOString(),
+            attributes: e.attributes,
+          });
+        }
+      }
+      // Simplify single-occurrence entries
+      const summary = grouped.map((g) =>
+        g.count === 1
+          ? { timestamp: g.firstSeen, type: g.type, source: g.source, attributes: g.attributes }
+          : { type: g.type, source: g.source, count: g.count, firstSeen: g.firstSeen, lastSeen: g.lastSeen, attributes: g.attributes }
+      );
+      const careCount = events.length - filtered.length;
+      const header = careCount > 0 ? `${filtered.length} events (${careCount} care/safety events filtered):\n` : "";
+      return { content: [{ type: "text", text: header + JSON.stringify(summary, null, 2) }] };
+    }
+  );
+
+  // ── list_care_status ──────────────────────────────────────────────────
+  server.tool(
+    "list_care_status",
+    "Get the latest care/safety subsystem status from buffered events. Shows triggered devices, inactive devices, and care behaviors without the noisy per-update spam.",
+    {},
+    async () => {
+      await ensureConnected();
+      // Peek at events but don't drain — list_events handles that
+      const events = client.peekEvents();
+      const CARE_PREFIXES = ["subcare:", "subsafety:"];
+      const careEvents = events.filter(
+        (e) => CARE_PREFIXES.some((p) => e.messageType.startsWith(p))
+      );
+      if (careEvents.length === 0) {
+        return { content: [{ type: "text", text: "No care/safety events buffered." }] };
+      }
+      // Deduplicate: keep only the latest event per messageType+source
+      const latest = new Map<string, typeof careEvents[0]>();
+      for (const e of careEvents) {
+        const key = `${e.messageType}|${e.source ?? ""}`;
+        latest.set(key, e);
+      }
+      const summary = Array.from(latest.values()).map((e) => ({
         timestamp: new Date(e.timestamp).toISOString(),
         type: e.messageType,
         source: e.source,
         attributes: e.attributes,
       }));
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      return { content: [{ type: "text", text: `${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary, null, 2)}` }] };
     }
   );
 

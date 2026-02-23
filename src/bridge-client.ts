@@ -92,6 +92,11 @@ export class BridgeClient {
     return events;
   }
 
+  /** Peek at buffered events without clearing the buffer. */
+  peekEvents(): BridgeEvent[] {
+    return [...this._events];
+  }
+
   private bufferEvent(msg: BridgeMessage): void {
     this._events.push({
       timestamp: Date.now(),
