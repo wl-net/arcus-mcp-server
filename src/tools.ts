@@ -208,11 +208,12 @@ export function registerTools(
         client.sendRequest("SERV:subs:", "subs:ListSubsystems", { placeId }),
       ]);
 
+      const subs = subsResp.payload.attributes.subsystems as Array<Record<string, unknown>> | undefined;
       const summary = {
         place: resp.payload.attributes,
         ...(personResp ? { person: summarizePerson(personResp.payload.attributes) } : {}),
         hub: summarizeHub(hubResp.payload.attributes),
-        subsystems: summarizeSubsystems(subsResp.payload.attributes),
+        subsystems: subs?.map((s) => s["subs:name"]) ?? [],
       };
 
       return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
@@ -301,7 +302,7 @@ export function registerTools(
         "base:GetAttributes",
         {}
       );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes, null, 2) }] };
     }
   );
 
