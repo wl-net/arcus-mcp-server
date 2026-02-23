@@ -165,6 +165,15 @@ function requirePlace(client: BridgeClient): ToolError | null {
   return { content: [{ type: "text" as const, text: "No active place set. Call set_active_place first." }], isError: true };
 }
 
+async function getHubAddress(client: BridgeClient): Promise<{ address: string; id: string } | ToolError> {
+  const hubResp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
+  const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
+  if (!hub) {
+    return { content: [{ type: "text" as const, text: "No hub found at active place." }], isError: true };
+  }
+  return { address: hub["base:address"] as string, id: hub["base:id"] as string };
+}
+
 export function registerTools(
   server: McpServer,
   client: BridgeClient,
@@ -641,6 +650,128 @@ export function registerTools(
       const hubId = hub["base:id"] as string;
       const resp = await client.sendRequest(hubAddress, "hubadv:Reboot", {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Hub ${hubId} is rebooting.` : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── zwave_network_info ──────────────────────────────────────────────────
+  server.tool(
+    "zwave_network_info",
+    "Get Z-Wave network information including node metrics, neighbors, routing, and zombie nodes",
+    {},
+    async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzwave:NetworkInformation", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    }
+  );
+
+  // ── zwave_heal ────────────────────────────────────────────────────────
+  server.tool(
+    "zwave_heal",
+    "Start a Z-Wave network heal. WARNING: interferes with normal Z-Wave operation during healing.",
+    {
+      block: z.boolean().default(false).describe("Block Z-Wave device control during heal (faster but disruptive)"),
+    },
+    async ({ block }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzwave:Heal", { block });
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave network heal started." : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── zwave_cancel_heal ─────────────────────────────────────────────────
+  server.tool(
+    "zwave_cancel_heal",
+    "Cancel any Z-Wave network heal in progress",
+    {},
+    async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzwave:CancelHeal", {});
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave heal cancelled." : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── zwave_remove_zombie ───────────────────────────────────────────────
+  server.tool(
+    "zwave_remove_zombie",
+    "Remove a zombie node from the Z-Wave network",
+    {
+      node: z.number().describe("Z-Wave node ID to remove (must be a zombie node)"),
+    },
+    async ({ node }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzwave:RemoveZombie", { node });
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Zombie node ${node} removed.` : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── zigbee_network_info ───────────────────────────────────────────────
+  server.tool(
+    "zigbee_network_info",
+    "Get Zigbee network information",
+    {},
+    async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzigbee:NetworkInformation", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    }
+  );
+
+  // ── zigbee_get_stats ──────────────────────────────────────────────────
+  server.tool(
+    "zigbee_get_stats",
+    "Get Zigbee radio statistics",
+    {},
+    async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzigbee:GetStats", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    }
+  );
+
+  // ── zigbee_scan ───────────────────────────────────────────────────────
+  server.tool(
+    "zigbee_scan",
+    "Scan the Zigbee network for devices and channel information",
+    {},
+    async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubzigbee:Scan", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     }
   );
 
