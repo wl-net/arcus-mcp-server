@@ -1,7 +1,7 @@
 # Arcus Platform Commands
 
 Complete list of message types extracted from the Arcus platform capability definitions.
-Commands marked with **[MCP]** have dedicated MCP tool support. Commands marked with **[BLOCKED]** are blocked by the safety blocklist. All others are reachable via the `send_message` escape hatch.
+Commands marked with **[MCP]** have a dedicated MCP tool implemented in this server. Commands marked with **[BLOCKED]** are blocked by the safety blocklist. All others can be sent via the `send_message` escape hatch.
 
 ## Session
 
@@ -95,7 +95,7 @@ Commands marked with **[MCP]** have dedicated MCP tool support. Commands marked 
 | `devadv:UpgradeDriver` | Upgrade device driver |
 | `devota:FirmwareUpdate` | Start firmware update |
 | `devota:FirmwareUpdateCancel` | Cancel firmware update |
-| `ident:Identify` | Flash LED on supported devices |
+| `ident:Identify` | **[MCP]** Flash LED on supported devices |
 
 ## Switch / Dimmer / Light
 
@@ -127,9 +127,9 @@ Commands marked with **[MCP]** have dedicated MCP tool support. Commands marked 
 | Command | Description |
 |---------|-------------|
 | `base:SetAttributes` | Set `doorlock:lockstate` (LOCKED/UNLOCKED) |
-| `doorlock:AuthorizePerson` | Authorize a person's PIN |
-| `doorlock:DeauthorizePerson` | Deauthorize a person's PIN |
-| `doorlock:BuzzIn` | Buzz someone in |
+| `doorlock:AuthorizePerson` | **[MCP]** Authorize a person's PIN |
+| `doorlock:DeauthorizePerson` | **[MCP]** Deauthorize a person's PIN |
+| `doorlock:BuzzIn` | **[MCP]** Buzz someone in |
 | `doorlock:ClearAllPins` | Clear all PINs from lock |
 
 ## Shade / Blind
@@ -288,8 +288,8 @@ Commands marked with **[MCP]** have dedicated MCP tool support. Commands marked 
 |---------|-------------|
 | `rule:ListRules` | **[MCP]** List all rules |
 | `rule:Delete` | **[MCP]** Delete a rule (dedicated tool) |
-| `rule:Enable` | Enable a rule |
-| `rule:Disable` | Disable a rule |
+| `rule:Enable` | **[MCP]** Enable a rule |
+| `rule:Disable` | **[MCP]** Disable a rule |
 | `rule:UpdateContext` | Update rule variable context |
 | `rule:ListHistoryEntries` | List rule history |
 | `rule:GetCategories` | **[MCP]** Get rule categories |
@@ -316,7 +316,7 @@ Commands marked with **[MCP]** have dedicated MCP tool support. Commands marked 
 
 | Command | Description |
 |---------|-------------|
-| `prodcat:GetProducts` | **[MCP]** Get all products |
+| `prodcat:GetProducts` | Get all products |
 | `prodcat:GetProduct` | Get a single product |
 | `prodcat:GetAllProducts` | Get all products (unfiltered) |
 | `prodcat:GetCategories` | Get product categories |
@@ -543,21 +543,21 @@ No client commands — events only (`subwater:ContinuousWaterUse`, `subwater:Exc
 
 | Command | Description |
 |---------|-------------|
-| `hubdebug:GetSyslog` | Get hub syslog |
-| `hubdebug:GetBootlog` | Get hub boot log |
-| `hubdebug:GetProcesses` | Get running processes |
-| `hubdebug:GetLoad` | Get system load |
-| `hubdebug:GetFiles` | Get file listing |
-| `hubdebug:GetAgentDb` | Get agent database |
+| `hubdebug:GetSyslog` | **[MCP]** Get hub syslog (admin) |
+| `hubdebug:GetBootlog` | **[MCP]** Get hub boot log (admin) |
+| `hubdebug:GetProcesses` | **[MCP]** Get running processes (admin) |
+| `hubdebug:GetLoad` | **[MCP]** Get system load (admin) |
+| `hubdebug:GetFiles` | **[MCP]** Get file listing (admin) |
+| `hubdebug:GetAgentDb` | **[MCP]** Get agent database (admin) |
 
 ## Hub Z-Wave
 
 | Command | Description |
 |---------|-------------|
-| `hubzwave:NetworkInformation` | Get Z-Wave network info |
-| `hubzwave:Heal` | Start Z-Wave network heal |
-| `hubzwave:CancelHeal` | Cancel Z-Wave heal |
-| `hubzwave:RemoveZombie` | Remove zombie Z-Wave node |
+| `hubzwave:NetworkInformation` | **[MCP]** Get Z-Wave network info |
+| `hubzwave:Heal` | **[MCP]** Start Z-Wave network heal |
+| `hubzwave:CancelHeal` | **[MCP]** Cancel Z-Wave heal |
+| `hubzwave:RemoveZombie` | **[MCP]** Remove zombie Z-Wave node |
 | `hubzwave:Associate` | Associate Z-Wave node |
 | `hubzwave:AssignReturnRoutes` | Assign return routes |
 | `hubzwave:ForcePrimary` | Force primary controller |
@@ -569,9 +569,9 @@ No client commands — events only (`subwater:ContinuousWaterUse`, `subwater:Exc
 
 | Command | Description |
 |---------|-------------|
-| `hubzigbee:NetworkInformation` | Get Zigbee network info |
-| `hubzigbee:GetStats` | Get Zigbee statistics |
-| `hubzigbee:Scan` | Scan Zigbee network |
+| `hubzigbee:NetworkInformation` | **[MCP]** Get Zigbee network info |
+| `hubzigbee:GetStats` | **[MCP]** Get Zigbee statistics |
+| `hubzigbee:Scan` | **[MCP]** Scan Zigbee network |
 | `hubzigbee:GetConfig` | Get Zigbee config |
 | `hubzigbee:FormNetwork` | Form new Zigbee network |
 | `hubzigbee:Identify` | Identify Zigbee device |
