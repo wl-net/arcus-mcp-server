@@ -4,6 +4,7 @@ import type { BridgeClient } from "./bridge-client.js";
 
 const SESS_DEST = "SERV:sess:";
 const WRITE_ENABLED = !!process.env.ARCUS_ENABLE_WRITE;
+const ADMIN_ENABLED = !!process.env.ARCUS_ENABLE_ADMIN;
 
 // Destructive message types that should never be sent
 const BLOCKED_MESSAGE_TYPES = new Set([
@@ -42,15 +43,15 @@ function summarizeHub(attrs: Record<string, unknown>): unknown {
     name: hub["hub:name"],
     model: hub["hub:model"],
     state: hub["hub:state"],
-    connectionState: hub["hubconn:state"],
-    firmwareVersion: hub["hubadv:agentver"],
-    osVersion: hub["hubadv:osver"],
-    powerSource: hub["hubpow:source"],
-    battery: hub["hubpow:Battery"],
-    securityMode: hub["hubalarm:securityMode"],
-    alarmState: hub["hubalarm:alarmState"],
-    zwaveDevices: hub["hubzwave:numDevices"],
-    zigbeeChannel: hub["hubzigbee:channel"],
+    conn: hub["hubconn:state"],
+    fw: hub["hubadv:agentver"],
+    os: hub["hubadv:osver"],
+    power: hub["hubpow:source"],
+    batt: hub["hubpow:Battery"],
+    security: hub["hubalarm:securityMode"],
+    alarm: hub["hubalarm:alarmState"],
+    zwave: hub["hubzwave:numDevices"],
+    zigbeeCh: hub["hubzigbee:channel"],
   };
 }
 
@@ -70,44 +71,51 @@ function summarizePerson(attrs: Record<string, unknown>): unknown {
     name: `${attrs["person:firstName"]} ${attrs["person:lastName"]}`,
     email: attrs["person:email"],
     mobile: attrs["person:mobileNumber"],
-    currentPlace: attrs["person:currPlace"],
+    place: attrs["person:currPlace"],
   };
 }
 
 function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { batterySize: string; batteryNum: number }> | null): unknown {
   const caps = d["base:caps"] as string[] | undefined;
+  const proto = d["devadv:protocol"] as string | undefined;
   const summary: Record<string, unknown> = {
     name: d["dev:name"],
-    address: d["base:address"],
+    addr: d["base:address"],
     type: d["dev:devtypehint"],
     vendor: d["dev:vendor"],
     model: d["dev:model"],
-    connection: d["devconn:state"],
-    protocol: d["devadv:protocol"],
+    conn: d["devconn:state"],
+    proto,
   };
+  if (proto === "ZWAV") {
+    const rawId = d["devadv:protocolid"];
+    if (rawId != null) {
+      const nodeId = zwaveNodeId(String(rawId));
+      if (nodeId != null) summary.node = nodeId;
+    }
+  }
 
-  // Include capability-specific state
-  if (caps?.includes("swit")) summary.switchState = d["swit:state"];
-  if (caps?.includes("dim")) summary.brightness = d["dim:brightness"];
-  if (caps?.includes("temp")) summary.temperature = d["temp:temperature"];
-  if (caps?.includes("humid")) summary.humidity = d["humid:humidity"];
+  if (caps?.includes("swit")) summary.switch = d["swit:state"];
+  if (caps?.includes("dim")) summary.dim = d["dim:brightness"];
+  if (caps?.includes("temp")) summary.temp = d["temp:temperature"];
+  if (caps?.includes("humid")) summary.humid = d["humid:humidity"];
   if (caps?.includes("therm")) {
-    summary.hvacMode = d["therm:hvacmode"];
-    summary.heatSetpoint = d["therm:heatsetpoint"];
-    summary.coolSetpoint = d["therm:coolsetpoint"];
+    summary.mode = d["therm:hvacmode"];
+    summary.heat = d["therm:heatsetpoint"];
+    summary.cool = d["therm:coolsetpoint"];
   }
   if (caps?.includes("cont")) summary.contact = d["cont:contact"];
   if (caps?.includes("mot")) summary.motion = d["mot:motion"];
-  if (caps?.includes("doorlock")) summary.lockState = d["doorlock:lockstate"];
-  if (caps?.includes("glass")) summary.glassBreak = d["glass:break"];
+  if (caps?.includes("doorlock")) summary.lock = d["doorlock:lockstate"];
+  if (caps?.includes("glass")) summary.glass = d["glass:break"];
   if (caps?.includes("pres")) summary.presence = d["pres:presence"];
   if (caps?.includes("devpow") && d["devpow:source"] === "BATTERY") {
-    summary.battery = d["devpow:battery"];
+    summary.batt = d["devpow:battery"];
     if (catalog) {
       const productId = d["dev:productId"] as string | undefined;
       if (productId) {
         const info = catalog.get(productId);
-        if (info) summary.batteryType = `${info.batteryNum}x ${info.batterySize}`;
+        if (info) summary.battType = `${info.batteryNum}x ${info.batterySize}`;
       }
     }
   }
@@ -117,38 +125,109 @@ function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { bat
 
 function summarizeIncident(i: Record<string, unknown>): unknown {
   return {
-    address: i["base:address"],
+    addr: i["base:address"],
     alert: i["incident:alert"],
-    alertState: i["incident:alertState"],
+    state: i["incident:alertState"],
     confirmed: i["incident:confirmed"],
     cancelled: i["incident:cancelled"],
     cancelledBy: i["incident:cancelledBy"],
-    startTime: i["incident:startTime"],
-    endTime: i["incident:endTime"],
+    start: i["incident:startTime"],
+    end: i["incident:endTime"],
     monitored: i["incident:monitored"],
   };
 }
 
 function summarizeScene(s: Record<string, unknown>): unknown {
-  const actions = s["scene:actions"] as Array<Record<string, unknown>> | undefined;
-  return {
+  const summary: Record<string, unknown> = {
     name: s["scene:name"],
-    address: s["base:address"],
-    enabled: s["scene:enabled"],
-    template: s["scene:template"],
-    actions: actions?.map((a) => a.name),
-    lastFired: s["scene:lastFireTime"],
+    addr: s["base:address"],
   };
+  if (s["scene:enabled"] === false) summary.off = true;
+  return summary;
 }
 
 function summarizeRule(r: Record<string, unknown>): unknown {
   return {
     name: r["rule:name"],
-    address: r["base:address"],
-    description: r["rule:description"],
+    addr: r["base:address"],
+    desc: r["rule:description"],
     state: r["rule:state"],
-    template: r["rule:template"],
   };
+}
+
+/** Extract Z-Wave node ID from a base64-encoded hub address key (node ID is byte 0) */
+function zwaveNodeId(base64Key: string): number | null {
+  try {
+    const buf = Buffer.from(base64Key, "base64");
+    return buf.length > 0 ? buf[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Rekey an object from base64 hub addresses to numeric Z-Wave node IDs */
+function decodeZwaveKeys<T>(obj: Record<string, T>): Record<string, T> {
+  const result: Record<string, T> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const nodeId = zwaveNodeId(key);
+    result[nodeId != null ? String(nodeId) : key] = val;
+  }
+  return result;
+}
+
+/** Decode base64 address arrays in Z-Wave neighbor/route data to node ID arrays */
+function decodeZwaveAddressArray(arr: unknown[]): number[] {
+  return arr
+    .map((v) => (typeof v === "string" ? zwaveNodeId(v) : null))
+    .filter((n): n is number => n != null);
+}
+
+function summarizeZwaveNetwork(
+  attrs: Record<string, unknown>,
+  nodeNames: Record<string, string>
+): unknown {
+  const result: Record<string, unknown> = { nodeDeviceMap: nodeNames };
+
+  // Metrics: decode keys
+  const metrics = attrs.metrics as Record<string, unknown> | undefined;
+  if (metrics) result.metrics = decodeZwaveKeys(metrics);
+
+  // Neighbors: decode keys and value arrays
+  const neighbors = attrs.neighbors as Record<string, unknown[]> | undefined;
+  if (neighbors) {
+    const decoded: Record<string, number[]> = {};
+    for (const [key, val] of Object.entries(neighbors)) {
+      const nodeId = zwaveNodeId(key);
+      decoded[nodeId != null ? String(nodeId) : key] = decodeZwaveAddressArray(val);
+    }
+    result.neighbors = decoded;
+  }
+
+  // Route: decode keys and route arrays within values
+  const route = attrs.route as Record<string, Record<string, unknown>> | undefined;
+  if (route) {
+    const decoded: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(route)) {
+      const nodeId = zwaveNodeId(key);
+      const entry: Record<string, unknown> = { ...val };
+      if (Array.isArray(entry.route)) {
+        entry.route = decodeZwaveAddressArray(entry.route);
+      }
+      decoded[nodeId != null ? String(nodeId) : key] = entry;
+    }
+    result.route = decoded;
+  }
+
+  // Routing: decode keys
+  const routing = attrs.routing as Record<string, unknown> | undefined;
+  if (routing) result.routing = decodeZwaveKeys(routing);
+
+  // Zombies: decode keys
+  const zombies = attrs.zombies as Record<string, unknown> | undefined;
+  if (zombies) result.zombies = Object.keys(decodeZwaveKeys(zombies)).map(Number);
+
+  // Skip 'graph' (large compressed blob, not useful as text)
+  return result;
 }
 
 const WRITE_BLOCKED_MSG = "Write operations are disabled. Set ARCUS_ENABLE_WRITE=1 to enable device commands, alarm control, and other actions.";
@@ -251,11 +330,10 @@ export function registerTools(
       const results = resp.payload.attributes.results as Array<Record<string, unknown>> | undefined;
       const summary = results
         ? results.map((e) => ({
-            timestamp: e.timestamp,
+            ts: e.timestamp,
             key: e.key,
-            subjectName: e.subjectName,
-            shortMessage: e.shortMessage,
-            longMessage: e.longMessage,
+            subject: e.subjectName,
+            msg: e.shortMessage,
           }))
         : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -276,12 +354,10 @@ export function registerTools(
       const summary = persons
         ? persons.map((p) => ({
             name: `${p["person:firstName"]} ${p["person:lastName"]}`,
-            address: p["base:address"],
+            addr: p["base:address"],
             email: p["person:email"],
             mobile: p["person:mobileNumber"],
-            owner: p["person:owner"],
-            hasPin: p["person:hasPin"],
-            hasLogin: p["person:hasLogin"],
+            pin: p["person:hasPin"],
           }))
         : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -346,11 +422,11 @@ export function registerTools(
           try {
             const resp = await client.sendRequest(addr, "base:GetAttributes", {});
             if (resp.payload.messageType === "Error") {
-              return { address: addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
+              return { addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
             }
-            return { ...(summarizeDevice(resp.payload.attributes, catalog) as Record<string, unknown>), address: addr };
+            return { ...(summarizeDevice(resp.payload.attributes, catalog) as Record<string, unknown>), addr };
           } catch (err) {
-            return { address: addr, error: (err as Error).message };
+            return { addr, error: (err as Error).message };
           }
         })
       );
@@ -388,6 +464,78 @@ export function registerTools(
     }
   );
 
+  // ── identify_device ──────────────────────────────────────────────────
+  server.tool(
+    "identify_device",
+    "Flash LED or play sound on a device to physically identify it",
+    {
+      deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
+    },
+    async ({ deviceAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const resp = await client.sendRequest(deviceAddress, "ident:Identify", {});
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Device ${deviceAddress} is identifying itself.` : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── doorlock_buzz_in ──────────────────────────────────────────────────
+  server.tool(
+    "doorlock_buzz_in",
+    "Temporarily unlock a door lock (auto-relocks in 30 seconds)",
+    {
+      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+    },
+    async ({ deviceAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const resp = await client.sendRequest(deviceAddress, "doorlock:BuzzIn", {});
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Door unlocked (will auto-relock in 30 seconds)." : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── doorlock_authorize_person ────────────────────────────────────────
+  server.tool(
+    "doorlock_authorize_person",
+    "Authorize a person's PIN on a door lock",
+    {
+      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+      personId: z.string().describe("Person ID to authorize (use list_persons to find IDs)"),
+    },
+    async ({ deviceAddress, personId }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const resp = await client.sendRequest(deviceAddress, "doorlock:AuthorizePerson", { personId });
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} authorized on lock.` : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── doorlock_deauthorize_person ────────────────────────────────────
+  server.tool(
+    "doorlock_deauthorize_person",
+    "Deauthorize a person's PIN from a door lock",
+    {
+      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+      personId: z.string().describe("Person ID to deauthorize (use list_persons to find IDs)"),
+    },
+    async ({ deviceAddress, personId }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const resp = await client.sendRequest(deviceAddress, "doorlock:DeauthorizePerson", { personId });
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} deauthorized from lock.` : JSON.stringify(resp.payload) }] };
+    }
+  );
+
   // ── list_rules ──────────────────────────────────────────────────────
   server.tool(
     "list_rules",
@@ -420,6 +568,42 @@ export function registerTools(
       await ensureConnected();
       const resp = await client.sendRequest(ruleAddress, "rule:Delete", {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── enable_rule ──────────────────────────────────────────────────────
+  server.tool(
+    "enable_rule",
+    "Enable a rule at the active place",
+    {
+      ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+    },
+    async ({ ruleAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const resp = await client.sendRequest(ruleAddress, "rule:Enable", {});
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule enabled." : JSON.stringify(resp.payload) }] };
+    }
+  );
+
+  // ── disable_rule ─────────────────────────────────────────────────────
+  server.tool(
+    "disable_rule",
+    "Disable a rule at the active place",
+    {
+      ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+    },
+    async ({ ruleAddress }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      const blocked = requireWrite();
+      if (blocked) return blocked;
+      await ensureConnected();
+      const resp = await client.sendRequest(ruleAddress, "rule:Disable", {});
+      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule disabled." : JSON.stringify(resp.payload) }] };
     }
   );
 
@@ -487,7 +671,7 @@ export function registerTools(
         if (sel.type === "LIST" && Array.isArray(sel.options)) {
           summary[key] = {
             type: "LIST",
-            options: (sel.options as Array<[string, string]>).map(([name, addr]) => ({ name, address: addr })),
+            options: (sel.options as Array<[string, string]>).map(([name, addr]) => ({ name, addr })),
           };
         } else {
           summary[key] = sel;
@@ -664,8 +848,30 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzwave:NetworkInformation", {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+      const [resp, devResp] = await Promise.all([
+        client.sendRequest(hub.address, "hubzwave:NetworkInformation", {}),
+        client.sendRequest(client.placeDestination, "place:ListDevices", {}),
+      ]);
+
+      // Build node ID → device name map from Z-Wave devices
+      const devices = devResp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
+      const nodeNames: Record<string, string> = {};
+      if (devices) {
+        for (const d of devices) {
+          if (d["devadv:protocol"] === "ZWAV") {
+            const rawId = d["devadv:protocolid"];
+            const name = d["dev:name"];
+            if (rawId != null && name != null) {
+              const nodeId = zwaveNodeId(String(rawId));
+              if (nodeId != null) {
+                nodeNames[String(nodeId)] = String(name);
+              }
+            }
+          }
+        }
+      }
+
+      return { content: [{ type: "text", text: JSON.stringify(summarizeZwaveNetwork(resp.payload.attributes, nodeNames)) }] };
     }
   );
 
@@ -775,6 +981,71 @@ export function registerTools(
     }
   );
 
+  // ── Admin-only tools (ARCUS_ENABLE_ADMIN=1) ────────────────────────
+  if (ADMIN_ENABLED) {
+    server.tool("hub_syslog", "Get hub system log", {}, async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetSyslog", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+
+    server.tool("hub_bootlog", "Get hub boot log", {}, async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetBootlog", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+
+    server.tool("hub_processes", "Get running processes on the hub", {}, async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetProcesses", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+
+    server.tool("hub_load", "Get system load on the hub", {}, async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetLoad", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+
+    server.tool("hub_agent_db", "Get hub agent database", {}, async () => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetAgentDb", {});
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+
+    server.tool("hub_files", "Get file listing from the hub", {
+      paths: z.array(z.string()).describe("List of file/directory paths to return"),
+    }, async ({ paths }) => {
+      const noPlace = requirePlace(client);
+      if (noPlace) return noPlace;
+      await ensureConnected();
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await client.sendRequest(hub.address, "hubdebug:GetFiles", { paths });
+      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+    });
+  }
+
   // ── list_subsystems ────────────────────────────────────────────────────
   server.tool(
     "list_subsystems",
@@ -877,8 +1148,8 @@ export function registerTools(
       // Simplify single-occurrence entries
       const summary = grouped.map((g) =>
         g.count === 1
-          ? { timestamp: g.firstSeen, type: g.type, source: g.source, attributes: g.attributes }
-          : { type: g.type, source: g.source, count: g.count, firstSeen: g.firstSeen, lastSeen: g.lastSeen, attributes: g.attributes }
+          ? { ts: g.firstSeen, type: g.type, src: g.source, attrs: g.attributes }
+          : { type: g.type, src: g.source, n: g.count, from: g.firstSeen, to: g.lastSeen, attrs: g.attributes }
       );
       const careCount = events.length - filtered.length;
       const header = careCount > 0 ? `${filtered.length} events (${careCount} care/safety events filtered):\n` : "";
@@ -909,10 +1180,10 @@ export function registerTools(
         latest.set(key, e);
       }
       const summary = Array.from(latest.values()).map((e) => ({
-        timestamp: new Date(e.timestamp).toISOString(),
+        ts: new Date(e.timestamp).toISOString(),
         type: e.messageType,
-        source: e.source,
-        attributes: e.attributes,
+        src: e.source,
+        attrs: e.attributes,
       }));
       return { content: [{ type: "text", text: `${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary)}` }] };
     }
