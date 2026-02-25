@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BridgeClient } from "./bridge-client.js";
+import {
+  Account, AlarmIncident, AlarmSubsystem, Base, Contact, Device, DeviceAdvanced,
+  DeviceConnection, DevicePower, Dimmer, DoorLock, Glass, Hub, HubAdvanced,
+  HubAlarm, HubConnection, HubDebug, HubPower, HubZigbee, HubZwave, Identify,
+  Motion, PairingSubsystem, Person, PersonService, Place, Presence, RelativeHumidity,
+  Rule, RuleService, RuleTemplate, Scene, SceneService, SessionService, Subsystem,
+  SubsystemService, Switch, Temperature, Thermostat,
+} from "./capabilities.js";
 
 const SESS_DEST = "SERV:sess:";
 const WRITE_ENABLED = !!process.env.ARCUS_ENABLE_WRITE;
@@ -8,28 +16,22 @@ const ADMIN_ENABLED = !!process.env.ARCUS_ENABLE_ADMIN;
 
 // Destructive message types that should never be sent
 const BLOCKED_MESSAGE_TYPES = new Set([
-  // Account
-  "account:Delete",
-  // Hub
-  "hub:Delete",
+  Account.CMD_DELETE,
+  Hub.CMD_DELETE,
   "hub:Deregister",
-  "hubadv:FactoryReset",
-  // Place
-  "place:Delete",
+  HubAdvanced.CMD_FACTORYRESET,
+  Place.CMD_DELETE,
   "place:RemoveDevice",
   "place:RemovePerson",
-  // Person
-  "person:Delete",
-  "person:RemoveFromPlace",
-  "person:ChangePin",
+  Person.CMD_DELETE,
+  Person.CMD_REMOVEFROMPLACE,
+  Person.CMD_CHANGEPIN,
   "person:SetPassword",
-  "person:ChangePassword",
-  // Device
-  "device:Remove",
-  "device:ForceRemove",
-  // Other
-  "scene:Delete",
-  "rule:Delete",
+  PersonService.CMD_CHANGEPASSWORD,
+  Device.CMD_REMOVE,
+  Device.CMD_FORCEREMOVE,
+  Scene.CMD_DELETE,
+  Rule.CMD_DELETE,
   "base:Remove",
 ]);
 
@@ -39,19 +41,19 @@ function summarizeHub(attrs: Record<string, unknown>): unknown {
   const hub = attrs.hub as Record<string, unknown> | undefined;
   if (!hub) return attrs;
   return {
-    id: hub["base:id"],
-    name: hub["hub:name"],
-    model: hub["hub:model"],
-    state: hub["hub:state"],
-    conn: hub["hubconn:state"],
-    fw: hub["hubadv:agentver"],
-    os: hub["hubadv:osver"],
-    power: hub["hubpow:source"],
-    batt: hub["hubpow:Battery"],
-    security: hub["hubalarm:securityMode"],
-    alarm: hub["hubalarm:alarmState"],
-    zwave: hub["hubzwave:numDevices"],
-    zigbeeCh: hub["hubzigbee:channel"],
+    id: hub[Base.ATTR_ID],
+    name: hub[Hub.ATTR_NAME],
+    model: hub[Hub.ATTR_MODEL],
+    state: hub[Hub.ATTR_STATE],
+    conn: hub[HubConnection.ATTR_STATE],
+    fw: hub[HubAdvanced.ATTR_AGENTVER],
+    os: hub[HubAdvanced.ATTR_OSVER],
+    power: hub[HubPower.ATTR_SOURCE],
+    batt: hub[HubPower.ATTR_BATTERY],
+    security: hub[HubAlarm.ATTR_SECURITYMODE],
+    alarm: hub[HubAlarm.ATTR_ALARMSTATE],
+    zwave: hub[HubZwave.ATTR_NUMDEVICES],
+    zigbeeCh: hub[HubZigbee.ATTR_CHANNEL],
   };
 }
 
@@ -59,60 +61,60 @@ function summarizeSubsystems(attrs: Record<string, unknown>): unknown {
   const subs = attrs.subsystems as Array<Record<string, unknown>> | undefined;
   if (!subs) return attrs;
   return subs.map((s) => ({
-    name: s["subs:name"],
-    address: s["base:address"],
-    state: s["subs:state"],
-    available: s["subs:available"],
+    name: s[Subsystem.ATTR_NAME],
+    address: s[Base.ATTR_ADDRESS],
+    state: s[Subsystem.ATTR_STATE],
+    available: s[Subsystem.ATTR_AVAILABLE],
   }));
 }
 
 function summarizePerson(attrs: Record<string, unknown>): unknown {
   return {
-    name: `${attrs["person:firstName"]} ${attrs["person:lastName"]}`,
-    email: attrs["person:email"],
-    mobile: attrs["person:mobileNumber"],
-    place: attrs["person:currPlace"],
+    name: `${attrs[Person.ATTR_FIRSTNAME]} ${attrs[Person.ATTR_LASTNAME]}`,
+    email: attrs[Person.ATTR_EMAIL],
+    mobile: attrs[Person.ATTR_MOBILENUMBER],
+    place: attrs[Person.ATTR_CURRPLACE],
   };
 }
 
 function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { batterySize: string; batteryNum: number }> | null): unknown {
-  const caps = d["base:caps"] as string[] | undefined;
-  const proto = d["devadv:protocol"] as string | undefined;
+  const caps = d[Base.ATTR_CAPS] as string[] | undefined;
+  const proto = d[DeviceAdvanced.ATTR_PROTOCOL] as string | undefined;
   const summary: Record<string, unknown> = {
-    name: d["dev:name"],
-    addr: d["base:address"],
-    type: d["dev:devtypehint"],
-    vendor: d["dev:vendor"],
-    model: d["dev:model"],
-    conn: d["devconn:state"],
+    name: d[Device.ATTR_NAME],
+    addr: d[Base.ATTR_ADDRESS],
+    type: d[Device.ATTR_DEVTYPEHINT],
+    vendor: d[Device.ATTR_VENDOR],
+    model: d[Device.ATTR_MODEL],
+    conn: d[DeviceConnection.ATTR_STATE],
     proto,
   };
   if (proto === "ZWAV") {
-    const rawId = d["devadv:protocolid"];
+    const rawId = d[DeviceAdvanced.ATTR_PROTOCOLID];
     if (rawId != null) {
       const nodeId = zwaveNodeId(String(rawId));
       if (nodeId != null) summary.node = nodeId;
     }
   }
 
-  if (caps?.includes("swit")) summary.switch = d["swit:state"];
-  if (caps?.includes("dim")) summary.dim = d["dim:brightness"];
-  if (caps?.includes("temp")) summary.temp = d["temp:temperature"];
-  if (caps?.includes("humid")) summary.humid = d["humid:humidity"];
-  if (caps?.includes("therm")) {
-    summary.mode = d["therm:hvacmode"];
-    summary.heat = d["therm:heatsetpoint"];
-    summary.cool = d["therm:coolsetpoint"];
+  if (caps?.includes(Switch.NAMESPACE)) summary.switch = d[Switch.ATTR_STATE];
+  if (caps?.includes(Dimmer.NAMESPACE)) summary.dim = d[Dimmer.ATTR_BRIGHTNESS];
+  if (caps?.includes(Temperature.NAMESPACE)) summary.temp = d[Temperature.ATTR_TEMPERATURE];
+  if (caps?.includes(RelativeHumidity.NAMESPACE)) summary.humid = d[RelativeHumidity.ATTR_HUMIDITY];
+  if (caps?.includes(Thermostat.NAMESPACE)) {
+    summary.mode = d[Thermostat.ATTR_HVACMODE];
+    summary.heat = d[Thermostat.ATTR_HEATSETPOINT];
+    summary.cool = d[Thermostat.ATTR_COOLSETPOINT];
   }
-  if (caps?.includes("cont")) summary.contact = d["cont:contact"];
-  if (caps?.includes("mot")) summary.motion = d["mot:motion"];
-  if (caps?.includes("doorlock")) summary.lock = d["doorlock:lockstate"];
-  if (caps?.includes("glass")) summary.glass = d["glass:break"];
-  if (caps?.includes("pres")) summary.presence = d["pres:presence"];
-  if (caps?.includes("devpow") && d["devpow:source"] === "BATTERY") {
-    summary.batt = d["devpow:battery"];
+  if (caps?.includes(Contact.NAMESPACE)) summary.contact = d[Contact.ATTR_CONTACT];
+  if (caps?.includes(Motion.NAMESPACE)) summary.motion = d[Motion.ATTR_MOTION];
+  if (caps?.includes(DoorLock.NAMESPACE)) summary.lock = d[DoorLock.ATTR_LOCKSTATE];
+  if (caps?.includes(Glass.NAMESPACE)) summary.glass = d[Glass.ATTR_BREAK];
+  if (caps?.includes(Presence.NAMESPACE)) summary.presence = d[Presence.ATTR_PRESENCE];
+  if (caps?.includes(DevicePower.NAMESPACE) && d[DevicePower.ATTR_SOURCE] === DevicePower.SOURCE_BATTERY) {
+    summary.batt = d[DevicePower.ATTR_BATTERY];
     if (catalog) {
-      const productId = d["dev:productId"] as string | undefined;
+      const productId = d[Device.ATTR_PRODUCTID] as string | undefined;
       if (productId) {
         const info = catalog.get(productId);
         if (info) summary.battType = `${info.batteryNum}x ${info.batterySize}`;
@@ -125,33 +127,33 @@ function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { bat
 
 function summarizeIncident(i: Record<string, unknown>): unknown {
   return {
-    addr: i["base:address"],
-    alert: i["incident:alert"],
-    state: i["incident:alertState"],
-    confirmed: i["incident:confirmed"],
-    cancelled: i["incident:cancelled"],
-    cancelledBy: i["incident:cancelledBy"],
-    start: i["incident:startTime"],
-    end: i["incident:endTime"],
-    monitored: i["incident:monitored"],
+    addr: i[Base.ATTR_ADDRESS],
+    alert: i[AlarmIncident.ATTR_ALERT],
+    state: i[AlarmIncident.ATTR_ALERTSTATE],
+    confirmed: i[AlarmIncident.ATTR_CONFIRMED],
+    cancelled: i[AlarmIncident.ATTR_CANCELLED],
+    cancelledBy: i[AlarmIncident.ATTR_CANCELLEDBY],
+    start: i[AlarmIncident.ATTR_STARTTIME],
+    end: i[AlarmIncident.ATTR_ENDTIME],
+    monitored: i[AlarmIncident.ATTR_MONITORED],
   };
 }
 
 function summarizeScene(s: Record<string, unknown>): unknown {
   const summary: Record<string, unknown> = {
-    name: s["scene:name"],
-    addr: s["base:address"],
+    name: s[Scene.ATTR_NAME],
+    addr: s[Base.ATTR_ADDRESS],
   };
-  if (s["scene:enabled"] === false) summary.off = true;
+  if (s[Scene.ATTR_ENABLED] === false) summary.off = true;
   return summary;
 }
 
 function summarizeRule(r: Record<string, unknown>): unknown {
   return {
-    name: r["rule:name"],
-    addr: r["base:address"],
-    desc: r["rule:description"],
-    state: r["rule:state"],
+    name: r[Rule.ATTR_NAME],
+    addr: r[Base.ATTR_ADDRESS],
+    desc: r[Rule.ATTR_DESCRIPTION],
+    state: r[Rule.ATTR_STATE],
   };
 }
 
@@ -245,12 +247,12 @@ function requirePlace(client: BridgeClient): ToolError | null {
 }
 
 async function getHubAddress(client: BridgeClient): Promise<{ address: string; id: string } | ToolError> {
-  const hubResp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
+  const hubResp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
   const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
   if (!hub) {
     return { content: [{ type: "text" as const, text: "No hub found at active place." }], isError: true };
   }
-  return { address: hub["base:address"] as string, id: hub["base:id"] as string };
+  return { address: hub[Base.ATTR_ADDRESS] as string, id: hub[Base.ATTR_ID] as string };
 }
 
 export function registerTools(
@@ -271,7 +273,7 @@ export function registerTools(
       }
       const resp = await client.sendRequest(
         `SERV:person:${personId}`,
-        "person:ListAvailablePlaces",
+        Person.CMD_LISTAVAILABLEPLACES,
         {}
       );
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.places) }] };
@@ -289,9 +291,9 @@ export function registerTools(
       // Phase 1: SetActivePlace + GetAttributes (person) in parallel
       const personId = client.session?.personId;
       const [resp, personResp] = await Promise.all([
-        client.sendRequest(SESS_DEST, "sess:SetActivePlace", { placeId }),
+        client.sendRequest(SESS_DEST, SessionService.CMD_SETACTIVEPLACE, { placeId }),
         personId
-          ? client.sendRequest(`SERV:person:${personId}`, "base:GetAttributes", {})
+          ? client.sendRequest(`SERV:person:${personId}`, Base.CMD_GETATTRIBUTES, {})
           : Promise.resolve(null),
       ]);
       client.setActivePlace(placeId);
@@ -299,8 +301,8 @@ export function registerTools(
       // Phase 2: After SetActivePlaceResponse, send GetHub + ListSubsystems
       const placeDest = client.placeDestination;
       const [hubResp, subsResp] = await Promise.all([
-        client.sendRequest(placeDest, "place:GetHub", {}),
-        client.sendRequest("SERV:subs:", "subs:ListSubsystems", { placeId }),
+        client.sendRequest(placeDest, Place.CMD_GETHUB, {}),
+        client.sendRequest("SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId }),
       ]);
 
       const subs = subsResp.payload.attributes.subsystems as Array<Record<string, unknown>> | undefined;
@@ -308,7 +310,7 @@ export function registerTools(
         place: resp.payload.attributes,
         ...(personResp ? { person: summarizePerson(personResp.payload.attributes) } : {}),
         hub: summarizeHub(hubResp.payload.attributes),
-        subsystems: subs?.map((s) => s["subs:name"]) ?? [],
+        subsystems: subs?.map((s) => s[Subsystem.ATTR_NAME]) ?? [],
       };
 
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -326,7 +328,7 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, "place:ListHistoryEntries", { limit });
+      const resp = await client.sendRequest(client.placeDestination, Place.CMD_LISTHISTORYENTRIES, { limit });
       const results = resp.payload.attributes.results as Array<Record<string, unknown>> | undefined;
       const summary = results
         ? results.map((e) => ({
@@ -349,14 +351,14 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, "place:ListPersons", {});
+      const resp = await client.sendRequest(client.placeDestination, Place.CMD_LISTPERSONS, {});
       const persons = resp.payload.attributes.persons as Array<Record<string, unknown>> | undefined;
       const summary = persons
         ? persons.map((p) => ({
-            name: `${p["person:firstName"]} ${p["person:lastName"]}`,
-            addr: p["base:address"],
-            email: p["person:email"],
-            mobile: p["person:mobileNumber"],
+            name: `${p[Person.ATTR_FIRSTNAME]} ${p[Person.ATTR_LASTNAME]}`,
+            addr: p[Base.ATTR_ADDRESS],
+            email: p[Person.ATTR_EMAIL],
+            mobile: p[Person.ATTR_MOBILENUMBER],
             pin: p["person:hasPin"],
           }))
         : resp.payload.attributes;
@@ -374,7 +376,7 @@ export function registerTools(
       if (noPlace) return noPlace;
       await ensureConnected();
       const [resp] = await Promise.all([
-        client.sendRequest(client.placeDestination, "place:ListDevices", {}),
+        client.sendRequest(client.placeDestination, Place.CMD_LISTDEVICES, {}),
         client.fetchProductCatalog(),
       ]);
       const devices = resp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
@@ -395,7 +397,7 @@ export function registerTools(
       await ensureConnected();
       const resp = await client.sendRequest(
         deviceAddress,
-        "base:GetAttributes",
+        Base.CMD_GETATTRIBUTES,
         {}
       );
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
@@ -420,7 +422,7 @@ export function registerTools(
       const results = await Promise.all(
         deviceAddresses.map(async (addr) => {
           try {
-            const resp = await client.sendRequest(addr, "base:GetAttributes", {});
+            const resp = await client.sendRequest(addr, Base.CMD_GETATTRIBUTES, {});
             if (resp.payload.messageType === "Error") {
               return { addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
             }
@@ -475,7 +477,7 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, "ident:Identify", {});
+      const resp = await client.sendRequest(deviceAddress, Identify.CMD_IDENTIFY, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Device ${deviceAddress} is identifying itself.` : JSON.stringify(resp.payload) }] };
     }
   );
@@ -493,7 +495,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, "doorlock:BuzzIn", {});
+      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_BUZZIN, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Door unlocked (will auto-relock in 30 seconds)." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -512,7 +514,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, "doorlock:AuthorizePerson", { personId });
+      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_AUTHORIZEPERSON, { personId });
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} authorized on lock.` : JSON.stringify(resp.payload) }] };
     }
   );
@@ -531,7 +533,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, "doorlock:DeauthorizePerson", { personId });
+      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_DEAUTHORIZEPERSON, { personId });
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} deauthorized from lock.` : JSON.stringify(resp.payload) }] };
     }
   );
@@ -546,7 +548,7 @@ export function registerTools(
       if (noPlace) return noPlace;
       await ensureConnected();
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:rule:", "rule:ListRules", { placeId });
+      const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_LISTRULES, { placeId });
       const rules = resp.payload.attributes.rules as Array<Record<string, unknown>> | undefined;
       const summary = rules ? rules.map(summarizeRule) : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -566,7 +568,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, "rule:Delete", {});
+      const resp = await client.sendRequest(ruleAddress, Rule.CMD_DELETE, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -584,7 +586,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, "rule:Enable", {});
+      const resp = await client.sendRequest(ruleAddress, Rule.CMD_ENABLE, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule enabled." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -602,7 +604,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, "rule:Disable", {});
+      const resp = await client.sendRequest(ruleAddress, Rule.CMD_DISABLE, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule disabled." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -622,21 +624,21 @@ export function registerTools(
 
       if (!category) {
         // Return categories and counts
-        const resp = await client.sendRequest("SERV:rule:", "rule:GetCategories", { placeId });
+        const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_GETCATEGORIES, { placeId });
         return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.categories) }] };
       }
 
       // Return templates filtered by category
-      const resp = await client.sendRequest("SERV:rule:", "rule:ListRuleTemplates", { placeId });
+      const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_LISTRULETEMPLATES, { placeId });
       const templates = resp.payload.attributes.ruleTemplates as Array<Record<string, unknown>> | undefined;
       const summary = templates
         ? templates
-            .filter((t) => t["ruletmpl:satisfiable"] && (t["ruletmpl:categories"] as string[] | undefined)?.includes(category))
+            .filter((t) => t[RuleTemplate.ATTR_SATISFIABLE] && (t[RuleTemplate.ATTR_CATEGORIES] as string[] | undefined)?.includes(category))
             .map((t) => ({
-              id: t["base:id"],
-              template: t["ruletmpl:template"],
-              categories: t["ruletmpl:categories"],
-              premium: t["ruletmpl:premium"],
+              id: t[Base.ATTR_ID],
+              template: t[RuleTemplate.ATTR_TEMPLATE],
+              categories: t[RuleTemplate.ATTR_CATEGORIES],
+              premium: t[RuleTemplate.ATTR_PREMIUM],
             }))
         : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -657,7 +659,7 @@ export function registerTools(
       const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:ruletmpl:${templateId}`,
-        "ruletmpl:Resolve",
+        RuleTemplate.CMD_RESOLVE,
         { placeId }
       );
       const selectors = resp.payload.attributes.selectors as Record<string, unknown> | undefined;
@@ -702,7 +704,7 @@ export function registerTools(
       const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:ruletmpl:${templateId}`,
-        "ruletmpl:CreateRule",
+        RuleTemplate.CMD_CREATERULE,
         { placeId, name, description, context }
       );
       return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
@@ -721,7 +723,7 @@ export function registerTools(
       const placeId = client.activePlaceId!;
       const resp = await client.sendRequest(
         `SERV:subalarm:${placeId}`,
-        "subalarm:ListIncidents",
+        AlarmSubsystem.CMD_LISTINCIDENTS,
         {}
       );
       const incidents = resp.payload.attributes.incidents as Array<Record<string, unknown>> | undefined;
@@ -740,7 +742,7 @@ export function registerTools(
       if (noPlace) return noPlace;
       await ensureConnected();
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:scene:", "scene:ListScenes", { placeId });
+      const resp = await client.sendRequest("SERV:scene:", SceneService.CMD_LISTSCENES, { placeId });
       const scenes = resp.payload.attributes.scenes as Array<Record<string, unknown>> | undefined;
       const summary = scenes ? scenes.map(summarizeScene) : resp.payload.attributes;
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
@@ -763,7 +765,7 @@ export function registerTools(
       await ensureConnected();
       const placeId = client.activePlaceId!;
       const dest = `SERV:subalarm:${placeId}`;
-      const msgType = bypass ? "subalarm:ArmBypassed" : "subalarm:Arm";
+      const msgType = bypass ? AlarmSubsystem.CMD_ARMBYPASSED : AlarmSubsystem.CMD_ARM;
       const resp = await client.sendRequest(dest, msgType, { mode });
 
       if (resp.payload.messageType === "Error" && !bypass) {
@@ -795,7 +797,7 @@ export function registerTools(
       if (blocked) return blocked;
       await ensureConnected();
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest(`SERV:subalarm:${placeId}`, "subalarm:Disarm", {});
+      const resp = await client.sendRequest(`SERV:subalarm:${placeId}`, AlarmSubsystem.CMD_DISARM, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Alarm disarmed." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -809,7 +811,7 @@ export function registerTools(
       const noPlace = requirePlace(client);
       if (noPlace) return noPlace;
       await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
+      const resp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
       return { content: [{ type: "text", text: JSON.stringify(summarizeHub(resp.payload.attributes)) }] };
     }
   );
@@ -825,14 +827,14 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const hubResp = await client.sendRequest(client.placeDestination, "place:GetHub", {});
+      const hubResp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
       const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
       if (!hub) {
         return { content: [{ type: "text", text: "No hub found at active place." }], isError: true };
       }
-      const hubAddress = hub["base:address"] as string;
-      const hubId = hub["base:id"] as string;
-      const resp = await client.sendRequest(hubAddress, "hubadv:Reboot", {});
+      const hubAddress = hub[Base.ATTR_ADDRESS] as string;
+      const hubId = hub[Base.ATTR_ID] as string;
+      const resp = await client.sendRequest(hubAddress, HubAdvanced.CMD_REBOOT, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Hub ${hubId} is rebooting.` : JSON.stringify(resp.payload) }] };
     }
   );
@@ -849,8 +851,8 @@ export function registerTools(
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
       const [resp, devResp] = await Promise.all([
-        client.sendRequest(hub.address, "hubzwave:NetworkInformation", {}),
-        client.sendRequest(client.placeDestination, "place:ListDevices", {}),
+        client.sendRequest(hub.address, HubZwave.CMD_NETWORKINFORMATION, {}),
+        client.sendRequest(client.placeDestination, Place.CMD_LISTDEVICES, {}),
       ]);
 
       // Build node ID → device name map from Z-Wave devices
@@ -858,9 +860,9 @@ export function registerTools(
       const nodeNames: Record<string, string> = {};
       if (devices) {
         for (const d of devices) {
-          if (d["devadv:protocol"] === "ZWAV") {
-            const rawId = d["devadv:protocolid"];
-            const name = d["dev:name"];
+          if (d[DeviceAdvanced.ATTR_PROTOCOL] === "ZWAV") {
+            const rawId = d[DeviceAdvanced.ATTR_PROTOCOLID];
+            const name = d[Device.ATTR_NAME];
             if (rawId != null && name != null) {
               const nodeId = zwaveNodeId(String(rawId));
               if (nodeId != null) {
@@ -890,7 +892,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzwave:Heal", { block });
+      const resp = await client.sendRequest(hub.address, HubZwave.CMD_HEAL, { block });
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave network heal started." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -908,7 +910,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzwave:CancelHeal", {});
+      const resp = await client.sendRequest(hub.address, HubZwave.CMD_CANCELHEAL, {});
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave heal cancelled." : JSON.stringify(resp.payload) }] };
     }
   );
@@ -928,7 +930,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzwave:RemoveZombie", { node });
+      const resp = await client.sendRequest(hub.address, HubZwave.CMD_REMOVEZOMBIE, { node });
       return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Zombie node ${node} removed.` : JSON.stringify(resp.payload) }] };
     }
   );
@@ -944,7 +946,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzigbee:NetworkInformation", {});
+      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_NETWORKINFORMATION, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     }
   );
@@ -960,7 +962,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzigbee:GetStats", {});
+      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_GETSTATS, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     }
   );
@@ -976,7 +978,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubzigbee:Scan", {});
+      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_SCAN, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     }
   );
@@ -989,7 +991,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetSyslog", {});
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETSYSLOG, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
 
@@ -999,7 +1001,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetBootlog", {});
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETBOOTLOG, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
 
@@ -1009,7 +1011,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetProcesses", {});
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETPROCESSES, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
 
@@ -1019,7 +1021,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetLoad", {});
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETLOAD, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
 
@@ -1029,7 +1031,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetAgentDb", {});
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETAGENTDB, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
 
@@ -1041,7 +1043,7 @@ export function registerTools(
       await ensureConnected();
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, "hubdebug:GetFiles", { paths });
+      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETFILES, { paths });
       return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
     });
   }
@@ -1056,7 +1058,7 @@ export function registerTools(
       if (noPlace) return noPlace;
       await ensureConnected();
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:subs:", "subs:ListSubsystems", { placeId });
+      const resp = await client.sendRequest("SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId });
       return { content: [{ type: "text", text: JSON.stringify(summarizeSubsystems(resp.payload.attributes)) }] };
     }
   );
@@ -1079,8 +1081,8 @@ export function registerTools(
       const attrs: Record<string, unknown> = {};
       if (productId) attrs.productAddress = `SERV:product:${productId}`;
 
-      const startResp = await client.sendRequest(dest, "subpairing:StartPairing", attrs);
-      const searchResp = await client.sendRequest(dest, "subpairing:Search", {
+      const startResp = await client.sendRequest(dest, PairingSubsystem.CMD_STARTPAIRING, attrs);
+      const searchResp = await client.sendRequest(dest, PairingSubsystem.CMD_SEARCH, {
         ...attrs,
         form: {},
       });
@@ -1105,7 +1107,7 @@ export function registerTools(
       const blocked = requireWrite();
       if (blocked) return blocked;
       await ensureConnected();
-      const resp = await client.sendRequest(sceneAddress, "scene:Fire", {});
+      const resp = await client.sendRequest(sceneAddress, Scene.CMD_FIRE, {});
       return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
     }
   );
