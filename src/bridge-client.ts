@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { Product, ProductCatalog, SessionService } from "./capabilities.js";
 
 export interface BridgeEvent {
   timestamp: number;
@@ -92,14 +93,14 @@ export class BridgeClient {
 
   async fetchProductCatalog(): Promise<void> {
     if (this._productCatalog) return;
-    const resp = await this.sendRequest("SERV:prodcat:", "prodcat:GetProducts", {});
+    const resp = await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETPRODUCTS, {});
     const products = resp.payload.attributes.products as Array<Record<string, unknown>> | undefined;
     const catalog = new Map<string, { batterySize: string; batteryNum: number }>();
     if (products) {
       for (const p of products) {
-        const id = p["product:id"] as string | undefined;
-        const size = p["product:batteryPrimSize"] as string | undefined;
-        const num = p["product:batteryPrimNum"] as number | undefined;
+        const id = p[Product.ATTR_ID] as string | undefined;
+        const size = p[Product.ATTR_BATTERYPRIMSIZE] as string | undefined;
+        const num = p[Product.ATTR_BATTERYPRIMNUM] as number | undefined;
         if (id && size && size !== "NONE") {
           catalog.set(id, { batterySize: size, batteryNum: num ?? 1 });
         }
@@ -222,7 +223,7 @@ export class BridgeClient {
           if (this._reconnecting && this._activePlaceId) {
             const placeId = this._activePlaceId;
             log(`Reconnected — re-setting active place ${placeId}`);
-            this.sendRequest("SERV:sess:", "sess:SetActivePlace", { placeId }).then(
+            this.sendRequest("SERV:sess:", SessionService.CMD_SETACTIVEPLACE, { placeId }).then(
               () => log("Active place restored after reconnect"),
               (err) => log(`Failed to restore active place: ${err.message}`),
             );
