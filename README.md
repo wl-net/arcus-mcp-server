@@ -34,23 +34,12 @@ npm run build
 
 ### Claude Code integration
 
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "arcus": {
-      "command": "node",
-      "args": ["/path/to/arcus-mcp-server/dist/index.js"],
-      "env": {
-        "ARCUS_BRIDGE_URL": "http://localhost:8081",
-        "ARCUS_USERNAME": "user@example.com",
-        "ARCUS_PASSWORD": "password",
-        "ARCUS_ENABLE_WRITE": "1"
-      }
-    }
-  }
-}
+```bash
+claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
+  -e ARCUS_USERNAME=user@example.com \
+  -e ARCUS_PASSWORD=password \
+  -e ARCUS_ENABLE_WRITE=1 \
+  arcus -- node /path/to/arcus-mcp-server/dist/index.js
 ```
 
 ## Source Files
