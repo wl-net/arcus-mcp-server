@@ -1,11 +1,11 @@
 # Arcus MCP Server
 
-MCP (Model Context Protocol) server that connects AI agents to the Arcus smart home platform via the client-bridge WebSocket API.
+MCP (Model Context Protocol) server that connects AI agents to the Arcus Smart Home platform via the client-bridge WebSocket API.
 
 ## Architecture
 
 ```
-Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arcus Platform
+Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arcus Smart Home Platform
 ```
 
 - **Transport**: stdio for MCP, WebSocket for Arcus bridge
@@ -48,10 +48,11 @@ claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
 |------|-------------|
 | `src/index.ts` | Entry point. Creates MCP server on stdio, lazy bridge connection via `ensureConnected()` |
 | `src/bridge-client.ts` | WebSocket/REST client. Login, correlation-based request/response, event buffering, auto-reconnect |
-| `src/tools.ts` | All 25 MCP tool definitions, response summarizers, write guard, place guard, blocklist |
+| `src/capabilities.ts` | Auto-generated capability constants from Arcus Smart Home platform definitions |
+| `src/tools.ts` | All 38 MCP tool definitions (+6 admin), response summarizers, write guard, place guard, blocklist |
 | `docs/arcus-protocol.md` | Protocol reference gathered from real client traffic |
 
-## MCP Tools (25)
+## MCP Tools (38 + 6 admin)
 
 ### Session & Places
 | Tool | Description |
@@ -66,7 +67,15 @@ claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
 | `get_device` | Get full attributes of a single device |
 | `get_devices` | Batch get — fetches multiple devices in parallel |
 | `device_command` | Send command to a device (switch, lock, dimmer, thermostat, shade, etc.) |
+| `identify_device` | Flash LED or play sound on a device to physically identify it |
 | `search_devices` | Put hub into pairing/search mode for new or reconnecting devices |
+
+### Door Locks
+| Tool | Description |
+|------|-------------|
+| `doorlock_buzz_in` | Temporarily unlock a door lock (auto-relocks in 30 seconds) |
+| `doorlock_authorize_person` | Authorize a person's PIN on a door lock |
+| `doorlock_deauthorize_person` | Deauthorize a person's PIN from a door lock |
 
 ### Scenes & Rules
 | Tool | Description |
@@ -75,6 +84,8 @@ claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
 | `fire_scene` | Execute a scene |
 | `list_rules` | List automation rules |
 | `delete_rule` | Delete a rule |
+| `enable_rule` | Enable a rule |
+| `disable_rule` | Disable a rule |
 | `list_rule_templates` | List rule template categories, or templates in a category |
 | `resolve_rule_template` | Resolve a template's variables to valid device/person options |
 | `create_rule` | Create a rule from a template with variable mappings |
@@ -92,6 +103,13 @@ claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
 | `get_hub` | Get hub status (model, firmware, connection state, battery, Z-Wave/Zigbee info) |
 | `reboot_hub` | Reboot the hub |
 | `list_subsystems` | List subsystems (alarm, safety, care, etc.) |
+| `zwave_network_info` | Get Z-Wave network info including node metrics, neighbors, routing, and zombies |
+| `zwave_heal` | Start a Z-Wave network heal |
+| `zwave_cancel_heal` | Cancel a Z-Wave network heal in progress |
+| `zwave_remove_zombie` | Remove a zombie node from the Z-Wave network |
+| `zigbee_network_info` | Get Zigbee network information |
+| `zigbee_get_stats` | Get Zigbee radio statistics |
+| `zigbee_scan` | Scan the Zigbee network for devices and channel information |
 
 ### Events & Monitoring
 | Tool | Description |
@@ -105,6 +123,16 @@ claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
 | Tool | Description |
 |------|-------------|
 | `send_message` | Escape hatch — send any message type to any destination |
+
+### Admin (ARCUS_ENABLE_ADMIN=1)
+| Tool | Description |
+|------|-------------|
+| `hub_syslog` | Get hub system log |
+| `hub_bootlog` | Get hub boot log |
+| `hub_processes` | Get running processes on the hub |
+| `hub_load` | Get system load on the hub |
+| `hub_agent_db` | Get hub agent database |
+| `hub_files` | Get file listing from the hub |
 
 ## Safety Guards
 
