@@ -16,10 +16,11 @@ Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arc
 
 | Env Var | Required | Description |
 |---------|----------|-------------|
-| `ARCUS_BRIDGE_URL` | Yes | Bridge URL (e.g. `http://localhost:8081`) |
+| `ARCUS_BRIDGE_URL` | Yes | Bridge URL (e.g. `https://client-bridge.example.com`) |
 | `ARCUS_USERNAME` | Yes* | Login username |
 | `ARCUS_PASSWORD` | Yes* | Login password |
-| `ARCUS_AUTH_TOKEN` | No | Skip login, use token directly (replaces username/password) |
+| `ARCUS_API_KEY` | No | API key for direct API server connection (replaces username/password) |
+| `ARCUS_AUTH_TOKEN` | No | Skip login, use existing auth token directly |
 | `ARCUS_ENABLE_WRITE` | No | Set to `1` to enable device commands, alarm control, pairing, etc. |
 | `ARCUS_DEBUG` | No | Set to `1` to log all WebSocket traffic to stderr |
 
@@ -35,11 +36,28 @@ npm run build
 ### Claude Code integration
 
 ```bash
-claude mcp add -s user -e ARCUS_BRIDGE_URL=http://localhost:8081 \
+claude mcp add arcus -s user \
+  -e ARCUS_BRIDGE_URL=https://client-bridge.example.com \
   -e ARCUS_USERNAME=user@example.com \
   -e ARCUS_PASSWORD=password \
   -e ARCUS_ENABLE_WRITE=1 \
-  arcus -- node /path/to/arcus-mcp-server/dist/index.js
+  -- node /path/to/arcus-mcp-server/dist/index.js
+```
+
+Or with an API key (skips login, auto-selects place):
+
+```bash
+claude mcp add arcus -s user \
+  -e ARCUS_BRIDGE_URL=https://client-bridge.example.com \
+  -e ARCUS_API_KEY=your-api-key \
+  -e ARCUS_ENABLE_WRITE=1 \
+  -- node /path/to/arcus-mcp-server/dist/index.js
+```
+
+To remove:
+
+```bash
+claude mcp remove arcus
 ```
 
 ## Source Files

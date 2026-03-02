@@ -13,9 +13,10 @@ function requireEnv(name: string): string {
 }
 
 const BRIDGE_URL = requireEnv("ARCUS_BRIDGE_URL");
-const AUTH_TOKEN = process.env.ARCUS_AUTH_TOKEN;
-const USERNAME = AUTH_TOKEN ? undefined : requireEnv("ARCUS_USERNAME");
-const PASSWORD = AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
+const API_KEY = process.env.ARCUS_API_KEY;
+const AUTH_TOKEN = API_KEY ? undefined : process.env.ARCUS_AUTH_TOKEN;
+const USERNAME = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_USERNAME");
+const PASSWORD = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
 
 const bridgeClient = new BridgeClient();
 
@@ -27,21 +28,35 @@ export function ensureConnected(): Promise<void> {
   connectPromise = null;
   if (!connectPromise) {
     connectPromise = (async () => {
-      let token: string;
-      if (AUTH_TOKEN) {
-        process.stderr.write("[arcus] Using provided auth token\n");
-        token = AUTH_TOKEN;
+      let session;
+      if (API_KEY) {
+        process.stderr.write(`[arcus] Connecting to API server at ${BRIDGE_URL}...\n`);
+        session = await bridgeClient.connectApiServer(BRIDGE_URL, API_KEY);
       } else {
-        process.stderr.write(`[arcus] Logging in to ${BRIDGE_URL}...\n`);
-        token = await bridgeClient.login(BRIDGE_URL, USERNAME!, PASSWORD!);
-        process.stderr.write("[arcus] Login successful\n");
+        let token: string;
+        if (AUTH_TOKEN) {
+          process.stderr.write("[arcus] Using provided auth token\n");
+          token = AUTH_TOKEN;
+        } else {
+          process.stderr.write(`[arcus] Logging in to ${BRIDGE_URL}...\n`);
+          token = await bridgeClient.login(BRIDGE_URL, USERNAME!, PASSWORD!);
+          process.stderr.write("[arcus] Login successful\n");
+        }
+
+        process.stderr.write("[arcus] Connecting WebSocket...\n");
+        session = await bridgeClient.connect(BRIDGE_URL, token);
       }
 
-      process.stderr.write("[arcus] Connecting WebSocket...\n");
-      const session = await bridgeClient.connect(BRIDGE_URL, token);
       process.stderr.write(
         `[arcus] Connected — personId=${session.personId}, ${session.places.length} place(s)\n`
       );
+
+      // Auto-set place in API server mode
+      if (bridgeClient.autoPlace && session.places.length > 0) {
+        const place = session.places[0];
+        bridgeClient.setActivePlace(place.placeId);
+        process.stderr.write(`[arcus] Auto-selected place: ${place.placeName} (${place.placeId})\n`);
+      }
     })();
   }
   return connectPromise;
