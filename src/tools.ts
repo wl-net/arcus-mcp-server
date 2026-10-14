@@ -1,6 +1,6 @@
 import { z, type ZodRawShape, type ZodTypeAny } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { BridgeClient, BridgeMessage } from "./bridge-client.js";
 import {
   Account, AlarmIncident, AlarmSubsystem, Base, Contact, Device, DeviceAdvanced,
@@ -343,6 +343,29 @@ async function getHubAddress(client: BridgeClient): Promise<{ address: string; i
   return { address: hub[Base.ATTR_ADDRESS] as string, id: hub[Base.ATTR_ID] as string };
 }
 
+// ── Tool annotations ──────────────────────────────────────────────────
+// Hints for clients deciding what to auto-approve or confirm. Every tool acts
+// on the user's own Arcus account, so openWorldHint is false unless noted.
+
+const READ_ONLY: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+
+/** Annotations for a tool that changes state */
+function writes(opts: { destructive: boolean; idempotent: boolean; openWorld?: boolean }): ToolAnnotations {
+  return {
+    readOnlyHint: false,
+    destructiveHint: opts.destructive,
+    idempotentHint: opts.idempotent,
+    openWorldHint: opts.openWorld ?? false,
+  };
+}
+
+interface ToolConfig<Args extends ZodRawShape> {
+  title: string;
+  description: string;
+  inputSchema: Args;
+  annotations: ToolAnnotations;
+}
+
 /** Text for a command whose success reply is EmptyMessage */
 function emptyOk(resp: BridgeMessage, okText: string): CallToolResult {
   return textResult(resp.payload.messageType === "EmptyMessage" ? okText : JSON.stringify(resp.payload));
@@ -358,18 +381,21 @@ export function registerTools(
   // Every handler goes through withErrorHandling
   function tool<Args extends ZodRawShape>(
     name: string,
-    description: string,
-    schema: Args,
+    config: ToolConfig<Args>,
     handler: (args: z.objectOutputType<Args, ZodTypeAny>) => Promise<CallToolResult>
   ): void {
-    server.tool(name, description, schema, withErrorHandling(handler) as never);
+    server.registerTool(name, config, withErrorHandling(handler) as never);
   }
 
   // ── list_places ──────────────────────────────────────────────────────
   tool(
     "list_places",
-    "List all places (homes/locations) accessible to the logged-in user",
-    {},
+    {
+      title: "List places",
+      description: "List all places (homes/locations) accessible to the logged-in user",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx, { place: false });
       if (notReady) return notReady;
@@ -383,8 +409,13 @@ export function registerTools(
   // ── set_active_place ─────────────────────────────────────────────────
   tool(
     "set_active_place",
-    "Set the active place. Must be called before device or scene operations.",
-    { placeId: z.string().describe("The place ID to activate (UUID)") },
+    {
+      title: "Set active place",
+      description: "Set the active place. Must be called before device or scene operations.",
+      inputSchema: { placeId: z.string().describe("The place ID to activate (UUID)") },
+      // Changes session state only, not the home
+      annotations: writes({ destructive: false, idempotent: true }),
+    },
     async ({ placeId }) => {
       const notReady = await preflight(ctx, { place: false });
       if (notReady) return notReady;
@@ -428,9 +459,13 @@ export function registerTools(
   // ── list_history ────────────────────────────────────────────────────
   tool(
     "list_history",
-    "List recent history entries at the active place",
     {
-      limit: z.number().default(10).describe("Number of entries to return (default 10)"),
+      title: "List history",
+      description: "List recent history entries at the active place",
+      inputSchema: {
+        limit: z.number().default(10).describe("Number of entries to return (default 10)"),
+      },
+      annotations: READ_ONLY,
     },
     async ({ limit }) => {
       const notReady = await preflight(ctx);
@@ -452,8 +487,12 @@ export function registerTools(
   // ── list_persons ────────────────────────────────────────────────────
   tool(
     "list_persons",
-    "List all persons at the active place",
-    {},
+    {
+      title: "List persons",
+      description: "List all persons at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -475,8 +514,12 @@ export function registerTools(
   // ── list_devices ─────────────────────────────────────────────────────
   tool(
     "list_devices",
-    "List all devices at the active place",
-    {},
+    {
+      title: "List devices",
+      description: "List all devices at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -494,8 +537,12 @@ export function registerTools(
   // ── get_device ───────────────────────────────────────────────────────
   tool(
     "get_device",
-    "Get full state and attributes of a specific device",
-    { deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)") },
+    {
+      title: "Get device",
+      description: "Get full state and attributes of a specific device",
+      inputSchema: { deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)") },
+      annotations: READ_ONLY,
+    },
     async ({ deviceAddress }) => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -507,11 +554,15 @@ export function registerTools(
   // ── get_devices ──────────────────────────────────────────────────────
   tool(
     "get_devices",
-    "Get full state and attributes of multiple devices in one call",
     {
-      deviceAddresses: z
-        .array(z.string())
-        .describe("Array of device addresses (e.g. [\"DRIV:dev:abc-123\", \"DRIV:dev:def-456\"])"),
+      title: "Get devices",
+      description: "Get full state and attributes of multiple devices in one call",
+      inputSchema: {
+        deviceAddresses: z
+          .array(z.string())
+          .describe("Array of device addresses (e.g. [\"DRIV:dev:abc-123\", \"DRIV:dev:def-456\"])"),
+      },
+      annotations: READ_ONLY,
     },
     async ({ deviceAddresses }) => {
       const notReady = await preflight(ctx);
@@ -539,18 +590,22 @@ export function registerTools(
   // ── device_command ───────────────────────────────────────────────────
   tool(
     "device_command",
-    `Send a command to a device. Examples:
+    {
+      title: "Send device command",
+      description: `Send a command to a device. Examples:
 - Turn on switch: commandName="base:SetAttributes", attributes={"swit:state":"ON"}
 - Lock door: commandName="base:SetAttributes", attributes={"doorlock:lockstate":"LOCKED"}
 - Set thermostat: commandName="base:SetAttributes", attributes={"therm:heatsetpoint":72}
 - Dim light: commandName="base:SetAttributes", attributes={"dim:brightness":50}`,
-    {
-      deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
-      commandName: z.string().describe("Command message type (e.g. swit:SetAttributes)"),
-      attributes: z
-        .record(z.string(), z.unknown())
-        .default({})
-        .describe("Command attributes as key-value pairs"),
+      inputSchema: {
+        deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
+        commandName: z.string().describe("Command message type (e.g. swit:SetAttributes)"),
+        attributes: z
+          .record(z.string(), z.unknown())
+          .default({})
+          .describe("Command attributes as key-value pairs"),
+      },
+      annotations: writes({ destructive: true, idempotent: false }),
     },
     async ({ deviceAddress, commandName, attributes }) => {
       const blocked = blockedMessage(commandName);
@@ -565,9 +620,13 @@ export function registerTools(
   // ── identify_device ──────────────────────────────────────────────────
   tool(
     "identify_device",
-    "Flash LED or play sound on a device to physically identify it",
     {
-      deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
+      title: "Identify device",
+      description: "Flash LED or play sound on a device to physically identify it",
+      inputSchema: {
+        deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
+      },
+      annotations: writes({ destructive: false, idempotent: false }),
     },
     async ({ deviceAddress }) => {
       const notReady = await preflight(ctx);
@@ -580,9 +639,13 @@ export function registerTools(
   // ── doorlock_buzz_in ──────────────────────────────────────────────────
   tool(
     "doorlock_buzz_in",
-    "Temporarily unlock a door lock (auto-relocks in 30 seconds)",
     {
-      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+      title: "Buzz in (unlock door)",
+      description: "Temporarily unlock a door lock (auto-relocks in 30 seconds)",
+      inputSchema: {
+        deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+      },
+      annotations: writes({ destructive: true, idempotent: false }),
     },
     async ({ deviceAddress }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -595,10 +658,15 @@ export function registerTools(
   // ── doorlock_authorize_person ────────────────────────────────────────
   tool(
     "doorlock_authorize_person",
-    "Authorize a person's PIN on a door lock",
     {
-      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
-      personId: z.string().describe("Person ID to authorize (use list_persons to find IDs)"),
+      title: "Authorize person on lock",
+      description: "Authorize a person's PIN on a door lock",
+      inputSchema: {
+        deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+        personId: z.string().describe("Person ID to authorize (use list_persons to find IDs)"),
+      },
+      // Grants physical access, so treated as destructive
+      annotations: writes({ destructive: true, idempotent: true }),
     },
     async ({ deviceAddress, personId }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -611,10 +679,14 @@ export function registerTools(
   // ── doorlock_deauthorize_person ────────────────────────────────────
   tool(
     "doorlock_deauthorize_person",
-    "Deauthorize a person's PIN from a door lock",
     {
-      deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
-      personId: z.string().describe("Person ID to deauthorize (use list_persons to find IDs)"),
+      title: "Deauthorize person from lock",
+      description: "Deauthorize a person's PIN from a door lock",
+      inputSchema: {
+        deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
+        personId: z.string().describe("Person ID to deauthorize (use list_persons to find IDs)"),
+      },
+      annotations: writes({ destructive: true, idempotent: true }),
     },
     async ({ deviceAddress, personId }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -627,8 +699,12 @@ export function registerTools(
   // ── list_rules ──────────────────────────────────────────────────────
   tool(
     "list_rules",
-    "List all rules at the active place",
-    {},
+    {
+      title: "List rules",
+      description: "List all rules at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -643,9 +719,13 @@ export function registerTools(
   // ── delete_rule ────────────────────────────────────────────────────
   tool(
     "delete_rule",
-    "Delete a rule at the active place",
     {
-      ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      title: "Delete rule",
+      description: "Delete a rule at the active place",
+      inputSchema: {
+        ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      },
+      annotations: writes({ destructive: true, idempotent: true }),
     },
     async ({ ruleAddress }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -658,9 +738,13 @@ export function registerTools(
   // ── enable_rule ──────────────────────────────────────────────────────
   tool(
     "enable_rule",
-    "Enable a rule at the active place",
     {
-      ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      title: "Enable rule",
+      description: "Enable a rule at the active place",
+      inputSchema: {
+        ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      },
+      annotations: writes({ destructive: false, idempotent: true }),
     },
     async ({ ruleAddress }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -673,9 +757,14 @@ export function registerTools(
   // ── disable_rule ─────────────────────────────────────────────────────
   tool(
     "disable_rule",
-    "Disable a rule at the active place",
     {
-      ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      title: "Disable rule",
+      description: "Disable a rule at the active place",
+      inputSchema: {
+        ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
+      },
+      // Can switch off security/safety automations
+      annotations: writes({ destructive: true, idempotent: true }),
     },
     async ({ ruleAddress }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -688,9 +777,13 @@ export function registerTools(
   // ── list_rule_templates ─────────────────────────────────────────────
   tool(
     "list_rule_templates",
-    "List available rule templates at the active place. With no category, returns category names and counts. With a category, returns templates in that category.",
     {
-      category: z.string().optional().describe("Filter by category name (e.g. \"Security Alarm\", \"Doors & Locks\"). Omit to list categories."),
+      title: "List rule templates",
+      description: "List available rule templates at the active place. With no category, returns category names and counts. With a category, returns templates in that category.",
+      inputSchema: {
+        category: z.string().optional().describe("Filter by category name (e.g. \"Security Alarm\", \"Doors & Locks\"). Omit to list categories."),
+      },
+      annotations: READ_ONLY,
     },
     async ({ category }) => {
       const notReady = await preflight(ctx);
@@ -723,9 +816,13 @@ export function registerTools(
   // ── resolve_rule_template ──────────────────────────────────────────
   tool(
     "resolve_rule_template",
-    "Resolve a rule template's variables, returning the valid options for each selector (devices, persons, values, etc.)",
     {
-      templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
+      title: "Resolve rule template",
+      description: "Resolve a rule template's variables, returning the valid options for each selector (devices, persons, values, etc.)",
+      inputSchema: {
+        templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
+      },
+      annotations: READ_ONLY,
     },
     async ({ templateId }) => {
       const notReady = await preflight(ctx);
@@ -756,14 +853,18 @@ export function registerTools(
   // ── create_rule ────────────────────────────────────────────────────
   tool(
     "create_rule",
-    `Create a rule from a template. Use list_rule_templates to find available templates and their variables. The context maps template variables (e.g. "button", "switch", "contact") to device/person addresses.`,
     {
-      templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
-      name: z.string().describe("Name for the rule"),
-      description: z.string().describe("Description of the rule"),
-      context: z
-        .record(z.string(), z.string())
-        .describe("Template variable mappings (e.g. {\"button\": \"DRIV:dev:abc-123\"})"),
+      title: "Create rule",
+      description: `Create a rule from a template. Use list_rule_templates to find available templates and their variables. The context maps template variables (e.g. "button", "switch", "contact") to device/person addresses.`,
+      inputSchema: {
+        templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
+        name: z.string().describe("Name for the rule"),
+        description: z.string().describe("Description of the rule"),
+        context: z
+          .record(z.string(), z.string())
+          .describe("Template variable mappings (e.g. {\"button\": \"DRIV:dev:abc-123\"})"),
+      },
+      annotations: writes({ destructive: false, idempotent: false }),
     },
     async ({ templateId, name, description, context }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -782,8 +883,12 @@ export function registerTools(
   // ── list_incidents ──────────────────────────────────────────────────
   tool(
     "list_incidents",
-    "List alarm incidents at the active place",
-    {},
+    {
+      title: "List alarm incidents",
+      description: "List alarm incidents at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -798,8 +903,12 @@ export function registerTools(
   // ── list_scenes ──────────────────────────────────────────────────────
   tool(
     "list_scenes",
-    "List all scenes at the active place",
-    {},
+    {
+      title: "List scenes",
+      description: "List all scenes at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -814,10 +923,14 @@ export function registerTools(
   // ── arm_alarm ───────────────────────────────────────────────────────
   tool(
     "arm_alarm",
-    `Arm the alarm at the active place. Modes: "ON" (full), "PARTIAL" (perimeter only). If bypass is true, triggered devices will be bypassed automatically.`,
     {
-      mode: z.enum(["ON", "PARTIAL"]).describe("Alarm mode: ON (full) or PARTIAL (perimeter only)"),
-      bypass: z.boolean().default(false).describe("Bypass triggered devices if arming fails (default false)"),
+      title: "Arm alarm",
+      description: `Arm the alarm at the active place. Modes: "ON" (full), "PARTIAL" (perimeter only). If bypass is true, triggered devices will be bypassed automatically.`,
+      inputSchema: {
+        mode: z.enum(["ON", "PARTIAL"]).describe("Alarm mode: ON (full) or PARTIAL (perimeter only)"),
+        bypass: z.boolean().default(false).describe("Bypass triggered devices if arming fails (default false)"),
+      },
+      annotations: writes({ destructive: false, idempotent: false }),
     },
     async ({ mode, bypass }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -839,8 +952,12 @@ export function registerTools(
   // ── disarm_alarm ──────────────────────────────────────────────────────
   tool(
     "disarm_alarm",
-    "Disarm the alarm at the active place",
-    {},
+    {
+      title: "Disarm alarm",
+      description: "Disarm the alarm at the active place",
+      inputSchema: {},
+      annotations: writes({ destructive: true, idempotent: true }),
+    },
     async () => {
       const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
@@ -853,8 +970,12 @@ export function registerTools(
   // ── get_hub ────────────────────────────────────────────────────────────
   tool(
     "get_hub",
-    "Get hub status at the active place",
-    {},
+    {
+      title: "Get hub",
+      description: "Get hub status at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -866,8 +987,12 @@ export function registerTools(
   // ── reboot_hub ──────────────────────────────────────────────────────────
   tool(
     "reboot_hub",
-    "Reboot the hub at the active place. The hub will go offline temporarily.",
-    {},
+    {
+      title: "Reboot hub",
+      description: "Reboot the hub at the active place. The hub will go offline temporarily.",
+      inputSchema: {},
+      annotations: writes({ destructive: true, idempotent: false }),
+    },
     async () => {
       const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
@@ -881,8 +1006,12 @@ export function registerTools(
   // ── zwave_network_info ──────────────────────────────────────────────────
   tool(
     "zwave_network_info",
-    "Get Z-Wave network information including node metrics, neighbors, routing, and zombie nodes",
-    {},
+    {
+      title: "Z-Wave network info",
+      description: "Get Z-Wave network information including node metrics, neighbors, routing, and zombie nodes",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -918,9 +1047,13 @@ export function registerTools(
   // ── zwave_heal ────────────────────────────────────────────────────────
   tool(
     "zwave_heal",
-    "Start a Z-Wave network heal. WARNING: interferes with normal Z-Wave operation during healing.",
     {
-      block: z.boolean().default(false).describe("Block Z-Wave device control during heal (faster but disruptive)"),
+      title: "Heal Z-Wave network",
+      description: "Start a Z-Wave network heal. WARNING: interferes with normal Z-Wave operation during healing.",
+      inputSchema: {
+        block: z.boolean().default(false).describe("Block Z-Wave device control during heal (faster but disruptive)"),
+      },
+      annotations: writes({ destructive: false, idempotent: false }),
     },
     async ({ block }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -935,8 +1068,12 @@ export function registerTools(
   // ── zwave_cancel_heal ─────────────────────────────────────────────────
   tool(
     "zwave_cancel_heal",
-    "Cancel any Z-Wave network heal in progress",
-    {},
+    {
+      title: "Cancel Z-Wave heal",
+      description: "Cancel any Z-Wave network heal in progress",
+      inputSchema: {},
+      annotations: writes({ destructive: false, idempotent: true }),
+    },
     async () => {
       const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
@@ -950,9 +1087,13 @@ export function registerTools(
   // ── zwave_remove_zombie ───────────────────────────────────────────────
   tool(
     "zwave_remove_zombie",
-    "Remove a zombie node from the Z-Wave network",
     {
-      node: z.number().describe("Z-Wave node ID to remove (must be a zombie node)"),
+      title: "Remove Z-Wave zombie node",
+      description: "Remove a zombie node from the Z-Wave network",
+      inputSchema: {
+        node: z.number().describe("Z-Wave node ID to remove (must be a zombie node)"),
+      },
+      annotations: writes({ destructive: true, idempotent: true }),
     },
     async ({ node }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -965,8 +1106,8 @@ export function registerTools(
   );
 
   // ── Zigbee and hub debug reads: hub address → one request → raw attributes
-  function hubRead(name: string, description: string, messageType: string): void {
-    tool(name, description, {}, async () => {
+  function hubRead(name: string, title: string, description: string, messageType: string): void {
+    tool(name, { title, description, inputSchema: {}, annotations: READ_ONLY }, async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
       const hub = await getHubAddress(client);
@@ -976,35 +1117,48 @@ export function registerTools(
     });
   }
 
-  hubRead("zigbee_network_info", "Get Zigbee network information", HubZigbee.CMD_NETWORKINFORMATION);
-  hubRead("zigbee_get_stats", "Get Zigbee radio statistics", HubZigbee.CMD_GETSTATS);
-  hubRead("zigbee_scan", "Scan the Zigbee network for devices and channel information", HubZigbee.CMD_SCAN);
+  hubRead("zigbee_network_info", "Zigbee network info", "Get Zigbee network information", HubZigbee.CMD_NETWORKINFORMATION);
+  hubRead("zigbee_get_stats", "Zigbee radio stats", "Get Zigbee radio statistics", HubZigbee.CMD_GETSTATS);
+  hubRead("zigbee_scan", "Zigbee scan", "Scan the Zigbee network for devices and channel information", HubZigbee.CMD_SCAN);
 
   // ── Admin-only tools (ARCUS_ENABLE_ADMIN=1) ────────────────────────
   if (process.env.ARCUS_ENABLE_ADMIN) {
-    hubRead("hub_syslog", "Get hub system log", HubDebug.CMD_GETSYSLOG);
-    hubRead("hub_bootlog", "Get hub boot log", HubDebug.CMD_GETBOOTLOG);
-    hubRead("hub_processes", "Get running processes on the hub", HubDebug.CMD_GETPROCESSES);
-    hubRead("hub_load", "Get system load on the hub", HubDebug.CMD_GETLOAD);
-    hubRead("hub_agent_db", "Get hub agent database", HubDebug.CMD_GETAGENTDB);
+    hubRead("hub_syslog", "Hub syslog", "Get hub system log", HubDebug.CMD_GETSYSLOG);
+    hubRead("hub_bootlog", "Hub boot log", "Get hub boot log", HubDebug.CMD_GETBOOTLOG);
+    hubRead("hub_processes", "Hub processes", "Get running processes on the hub", HubDebug.CMD_GETPROCESSES);
+    hubRead("hub_load", "Hub load", "Get system load on the hub", HubDebug.CMD_GETLOAD);
+    hubRead("hub_agent_db", "Hub agent database", "Get hub agent database", HubDebug.CMD_GETAGENTDB);
 
-    tool("hub_files", "Get file listing from the hub", {
-      paths: z.array(z.string()).describe("List of file/directory paths to return"),
-    }, async ({ paths }) => {
-      const notReady = await preflight(ctx);
-      if (notReady) return notReady;
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await request(client, hub.address, HubDebug.CMD_GETFILES, { paths });
-      return textResult(JSON.stringify(resp.payload.attributes));
-    });
+    tool(
+      "hub_files",
+      {
+        title: "Hub files",
+        description: "Get file listing from the hub",
+        inputSchema: {
+          paths: z.array(z.string()).describe("List of file/directory paths to return"),
+        },
+        annotations: READ_ONLY,
+      },
+      async ({ paths }) => {
+        const notReady = await preflight(ctx);
+        if (notReady) return notReady;
+        const hub = await getHubAddress(client);
+        if ("isError" in hub) return hub;
+        const resp = await request(client, hub.address, HubDebug.CMD_GETFILES, { paths });
+        return textResult(JSON.stringify(resp.payload.attributes));
+      }
+    );
   }
 
   // ── list_subsystems ────────────────────────────────────────────────────
   tool(
     "list_subsystems",
-    "List all subsystems at the active place",
-    {},
+    {
+      title: "List subsystems",
+      description: "List all subsystems at the active place",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
@@ -1017,9 +1171,13 @@ export function registerTools(
   // ── search_devices (pairing) ────────────────────────────────────────
   tool(
     "search_devices",
-    "Put the hub into pairing/search mode to find new or reconnecting devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
     {
-      productId: z.string().optional().describe("Product catalog ID to search for (e.g. \"7b8fd3\"). Omit to search for all devices."),
+      title: "Search for devices (pairing)",
+      description: "Put the hub into pairing/search mode to find new or reconnecting devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
+      inputSchema: {
+        productId: z.string().optional().describe("Product catalog ID to search for (e.g. \"7b8fd3\"). Omit to search for all devices."),
+      },
+      annotations: writes({ destructive: false, idempotent: true }),
     },
     async ({ productId }) => {
       const notReady = await preflight(ctx, { write: true });
@@ -1044,8 +1202,13 @@ export function registerTools(
   // ── fire_scene ───────────────────────────────────────────────────────
   tool(
     "fire_scene",
-    "Execute (fire) a scene",
-    { sceneAddress: z.string().describe("Scene address (e.g. SERV:scene:abc-123)") },
+    {
+      title: "Fire scene",
+      description: "Execute (fire) a scene",
+      inputSchema: { sceneAddress: z.string().describe("Scene address (e.g. SERV:scene:abc-123)") },
+      // Scenes can unlock doors or change security modes
+      annotations: writes({ destructive: true, idempotent: false }),
+    },
     async ({ sceneAddress }) => {
       const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
@@ -1057,8 +1220,13 @@ export function registerTools(
   // ── list_events ─────────────────────────────────────────────────────
   tool(
     "list_events",
-    "Drain buffered platform events (device state changes, alarm triggers, etc.) received since the last call. Returns and clears the buffer. Excludes noisy subcare/subsafety events — use list_care_status for those.",
-    {},
+    {
+      title: "List events",
+      description: "Drain buffered platform events (device state changes, alarm triggers, etc.) received since the last call. Returns and clears the buffer. Excludes noisy subcare/subsafety events — use list_care_status for those.",
+      inputSchema: {},
+      // Not read-only: draining the buffer hides these events from later calls
+      annotations: writes({ destructive: false, idempotent: false }),
+    },
     async () => {
       await ensureConnected();
       const events = client.drainEvents();
@@ -1104,8 +1272,12 @@ export function registerTools(
   // ── list_care_status ──────────────────────────────────────────────────
   tool(
     "list_care_status",
-    "Get the latest care/safety subsystem status from buffered events. Shows triggered devices, inactive devices, and care behaviors without the noisy per-update spam.",
-    {},
+    {
+      title: "Care/safety status",
+      description: "Get the latest care/safety subsystem status from buffered events. Shows triggered devices, inactive devices, and care behaviors without the noisy per-update spam.",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
     async () => {
       await ensureConnected();
       // Peek at events but don't drain — list_events handles that
@@ -1136,14 +1308,19 @@ export function registerTools(
   // ── send_message (escape hatch) ──────────────────────────────────────
   tool(
     "send_message",
-    "Send an arbitrary message to the Arcus platform (advanced/escape hatch)",
     {
-      destination: z.string().describe("Message destination (e.g. SERV:sess:, DRIV:dev:abc)"),
-      messageType: z.string().describe("Message type (e.g. sess:SetActivePlace)"),
-      attributes: z
-        .record(z.string(), z.unknown())
-        .default({})
-        .describe("Message attributes"),
+      title: "Send raw message",
+      description: "Send an arbitrary message to the Arcus platform (advanced/escape hatch)",
+      inputSchema: {
+        destination: z.string().describe("Message destination (e.g. SERV:sess:, DRIV:dev:abc)"),
+        messageType: z.string().describe("Message type (e.g. sess:SetActivePlace)"),
+        attributes: z
+          .record(z.string(), z.unknown())
+          .default({})
+          .describe("Message attributes"),
+      },
+      // Arbitrary destinations, not just this account's devices
+      annotations: writes({ destructive: true, idempotent: false, openWorld: true }),
     },
     async ({ destination, messageType, attributes }) => {
       const blocked = blockedMessage(messageType);
