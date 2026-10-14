@@ -83,4 +83,55 @@ describe("ensureConnected", () => {
     assert.ok(server.handshakes.every((h) => h.path === "/apibus" && h.authorization === "Bearer api-key"));
     assert.equal(client.placeDestination, "SERV:place:place-1");
   });
+
+  describe("expired token", () => {
+    it("logs in again with the stored credentials when a reconnect gets a 401", async () => {
+      const { server, client, ensureConnected } = await start({ username: "user", password: "pass" });
+      const changes: boolean[] = [];
+      client.onConnectionChange = (up) => changes.push(up);
+      await ensureConnected();
+      assert.equal(server.logins, 1);
+
+      // The session's token expires, then the connection drops
+      server.validTokens.delete("token-1");
+      server.dropConnection();
+      await until(() => changes.includes(true), 2000, "reconnect");
+      await ensureConnected();
+      assert.equal(server.logins, 2);
+      assert.deepEqual(server.handshakes.map((h) => h.cookie), [
+        "irisAuthToken=token-1",
+        "irisAuthToken=token-1",
+        "irisAuthToken=token-2",
+      ]);
+      assert.equal(server.connections, 2);
+    });
+
+    it("stops reconnecting with a clear error when a provided token is rejected", async () => {
+      const { server, client, ensureConnected } = await start({ authToken: "token-0" }, [50]);
+      await ensureConnected();
+
+      server.validTokens.delete("token-0");
+      server.dropConnection();
+      await until(() => client.reconnecting, 2000, "reconnect scheduled");
+      // A call waiting on the reconnect learns why it gave up
+      await assert.rejects(ensureConnected(), /auth token was rejected \(HTTP 401\)/);
+      assert.equal(client.reconnecting, false);
+      assert.equal(server.logins, 0);
+      // The next call tries afresh and reports the rejected token
+      await assert.rejects(ensureConnected(), /rejected ARCUS_AUTH_TOKEN \(HTTP 401\)/);
+      assert.equal(server.handshakes.length, 3);
+    });
+
+    it("does not try to log in when the API key is rejected", async () => {
+      const { server, client, ensureConnected } = await start({ apiKey: "api-key" }, [50]);
+      await ensureConnected();
+
+      server.validTokens.delete("api-key");
+      server.dropConnection();
+      await until(() => client.reconnecting, 2000, "reconnect scheduled");
+      await assert.rejects(ensureConnected(), /API key was rejected \(HTTP 401\)/);
+      assert.equal(server.logins, 0);
+      assert.equal(server.handshakes.length, 2);
+    });
+  });
 });

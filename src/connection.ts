@@ -1,4 +1,4 @@
-import type { BridgeClient, SessionInfo } from "./bridge-client.js";
+import { HandshakeError, type BridgeClient, type SessionInfo } from "./bridge-client.js";
 
 export interface ConnectionConfig {
   bridgeUrl: string;
@@ -44,6 +44,18 @@ export function createEnsureConnected(bridge: Bridge, config: ConnectionConfig):
   let inFlight: Promise<void> | null = null;
 
   async function connect(): Promise<void> {
+    try {
+      await connectOnce();
+    } catch (err) {
+      if (err instanceof HandshakeError && err.isAuthFailure) {
+        const what = config.apiKey ? "ARCUS_API_KEY" : config.authToken ? "ARCUS_AUTH_TOKEN" : "the login token";
+        throw new Error(`The bridge rejected ${what} (HTTP ${err.status})`);
+      }
+      throw err;
+    }
+  }
+
+  async function connectOnce(): Promise<void> {
     let session: SessionInfo;
     if (config.apiKey) {
       log(`Connecting to API server at ${config.bridgeUrl}...`);

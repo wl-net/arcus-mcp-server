@@ -59,6 +59,18 @@ export interface BridgeClientOptions {
   reconnectDelays?: number[];
 }
 
+/** The server refused the WebSocket upgrade with an HTTP error (e.g. 401 for a bad token) */
+export class HandshakeError extends Error {
+  constructor(readonly status: number) {
+    super(`Unexpected server response: ${status}`);
+    this.name = "HandshakeError";
+  }
+
+  get isAuthFailure(): boolean {
+    return this.status === 401 || this.status === 403;
+  }
+}
+
 /** Throw if a response is an Error reply, which sendRequest resolves rather than rejects */
 export function throwIfErrorResponse(resp: BridgeMessage, request: string): BridgeMessage {
   if (resp.payload?.messageType === "Error") {
@@ -97,6 +109,9 @@ export class BridgeClient {
   /** True while a reconnect attempt is connecting (between the timer firing and SessionCreated) */
   private _reconnectInFlight = false;
   private _connectionWaiters = new Set<ConnectionWaiter>();
+  /** Kept from login() so an expired irisAuthToken can be renewed on reconnect */
+  private _credentials: { baseUrl: string; username: string; password: string } | null = null;
+  private _needsLogin = false;
 
   constructor(options: BridgeClientOptions = {}) {
     this._reconnectDelays = options.reconnectDelays ?? RECONNECT_DELAYS;
@@ -256,6 +271,7 @@ export class BridgeClient {
       const match = cookie.match(/irisAuthToken=([^;]+)/);
       if (match) {
         this.token = match[1];
+        this._credentials = { baseUrl, username, password };
         dbg(`Got token: ${this.token.substring(0, 8)}...`);
         return this.token;
       }
@@ -308,6 +324,16 @@ export class BridgeClient {
 
       ws.on("open", () => {
         log("WebSocket connected");
+      });
+
+      ws.on("unexpected-response", (_req, res) => {
+        // Handle this ourselves (rather than ws's generic error) to keep the status
+        res.resume();
+        if (!settled) {
+          settled = true;
+          reject(new HandshakeError(res.statusCode ?? 0));
+        }
+        ws.terminate();
       });
 
       ws.on("ping", (data) => {
@@ -430,7 +456,8 @@ export class BridgeClient {
       this._reconnectTimer = null;
       if (this._intentionalClose) return;
       this._reconnectInFlight = true;
-      this._doConnect().then(
+      const attempt = this._needsLogin ? this._relogin().then(() => this._doConnect()) : this._doConnect();
+      attempt.then(
         () => {
           this._reconnectInFlight = false;
           log("Reconnected successfully");
@@ -438,12 +465,38 @@ export class BridgeClient {
         (err) => {
           this._reconnectInFlight = false;
           log(`Reconnect failed: ${err.message}`);
-          if (!this._intentionalClose) {
-            this._scheduleReconnect();
+          if (this._intentionalClose) return;
+          if (err instanceof HandshakeError && err.isAuthFailure) {
+            if (this._credentials && !this._autoPlace) {
+              // Most likely the irisAuthToken expired: log in again before the next attempt
+              this._needsLogin = true;
+            } else {
+              this._giveUpReconnect(this._autoPlace
+                ? `The API key was rejected (HTTP ${err.status}); not reconnecting`
+                : `The auth token was rejected (HTTP ${err.status}) and there are no login credentials to renew it; not reconnecting`);
+              return;
+            }
           }
+          this._scheduleReconnect();
         },
       );
     }, delay);
+  }
+
+  private async _relogin(): Promise<void> {
+    const { baseUrl, username, password } = this._credentials!;
+    log("Logging in again for a fresh auth token...");
+    const token = await this.login(baseUrl, username, password);
+    this._authHeaders = { Cookie: `irisAuthToken=${token}` };
+    this._needsLogin = false;
+    log("Login successful");
+  }
+
+  /** Stop reconnecting after a failure retrying can't fix; the next connect() starts over */
+  private _giveUpReconnect(reason: string): void {
+    log(reason);
+    this._cancelReconnect();
+    this._rejectConnectionWaiters(new Error(reason));
   }
 
   private _cancelReconnect(): void {
@@ -453,6 +506,7 @@ export class BridgeClient {
     }
     this._reconnecting = false;
     this._reconnectAttempt = 0;
+    this._needsLogin = false;
   }
 
   private _rejectPending(err: Error): void {
