@@ -15,7 +15,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
     "list_devices",
     {
       title: "List devices",
-      description: "List all devices at the active place",
+      description: "List all devices at the active place. Temperatures (temp) and thermostat setpoints (heat, cool) are in °C.",
       inputSchema: {},
       annotations: READ_ONLY,
     },
@@ -94,11 +94,12 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
       description: `Send a command to a device. Examples:
 - Turn on switch: commandName="base:SetAttributes", attributes={"swit:state":"ON"}
 - Lock door: commandName="base:SetAttributes", attributes={"doorlock:lockstate":"LOCKED"}
-- Set thermostat: commandName="base:SetAttributes", attributes={"therm:heatsetpoint":72}
-- Dim light: commandName="base:SetAttributes", attributes={"dim:brightness":50}`,
+- Set thermostat heat to 21°C (70°F): commandName="base:SetAttributes", attributes={"therm:heatsetpoint":21}
+- Dim light: commandName="base:SetAttributes", attributes={"dim:brightness":50}
+Thermostat setpoints and temperatures are always in °C; convert from °F first.`,
       inputSchema: {
         deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
-        commandName: z.string().describe("Command message type (e.g. swit:SetAttributes)"),
+        commandName: z.string().describe("Command message type (e.g. base:SetAttributes)"),
         attributes: z
           .record(z.string(), z.unknown())
           .default({})

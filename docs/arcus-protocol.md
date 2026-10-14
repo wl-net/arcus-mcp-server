@@ -115,7 +115,7 @@ Two-phase flow after authentication:
 | `base:SetAttributes` | `DRIV:dev:<id>` | `{"swit:state": "ON"\|"OFF"}` |
 | `base:SetAttributes` | `DRIV:dev:<id>` | `{"dim:brightness": 0-100}` |
 | `base:SetAttributes` | `DRIV:dev:<id>` | `{"doorlock:lockstate": "LOCKED"\|"UNLOCKED"}` |
-| `base:SetAttributes` | `DRIV:dev:<id>` | `{"therm:heatsetpoint": temp, "therm:coolsetpoint": temp}` |
+| `base:SetAttributes` | `DRIV:dev:<id>` | `{"therm:heatsetpoint": temp, "therm:coolsetpoint": temp}` (°C) |
 | `base:SetAttributes` | `DRIV:dev:<id>` | `{"shade:level": 0-100}` (0=closed, 100=open) |
 | `shade:GoToOpen` | `DRIV:dev:<id>` | `{}` |
 | `shade:GoToClose` | `DRIV:dev:<id>` | `{}` |

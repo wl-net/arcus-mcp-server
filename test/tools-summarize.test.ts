@@ -82,6 +82,18 @@ describe("summarizers", () => {
     assert.equal("batt" in summary, false);
   });
 
+  it("rounds temperatures and thermostat setpoints to one decimal", () => {
+    const summary = summarizeDevice({
+      "base:caps": ["temp", "therm"],
+      "temp:temperature": 21.11111111111111,
+      "therm:heatsetpoint": 20,
+      "therm:coolsetpoint": 22.200000762939453,
+    }) as Record<string, unknown>;
+    assert.equal(summary.temp, 21.1);
+    assert.equal(summary.heat, 20);
+    assert.equal(summary.cool, 22.2);
+  });
+
   it("returns raw attributes when there is no hub or subsystem list", () => {
     assert.deepEqual(summarizeHub({ other: 1 }), { other: 1 });
     assert.deepEqual(summarizeSubsystems({ other: 1 }), { other: 1 });

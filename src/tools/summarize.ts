@@ -49,6 +49,11 @@ export function summarizePerson(attrs: Record<string, unknown>): unknown {
   };
 }
 
+/** Round a reading to one decimal place; sensors report values like 21.11111111111111 */
+function round1(value: unknown): unknown {
+  return typeof value === "number" ? Math.round(value * 10) / 10 : value;
+}
+
 export function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string, { batterySize: string; batteryNum: number }> | null): unknown {
   const caps = d[Base.ATTR_CAPS] as string[] | undefined;
   const proto = d[DeviceAdvanced.ATTR_PROTOCOL] as string | undefined;
@@ -71,12 +76,12 @@ export function summarizeDevice(d: Record<string, unknown>, catalog?: Map<string
 
   if (caps?.includes(Switch.NAMESPACE)) summary.switch = d[Switch.ATTR_STATE];
   if (caps?.includes(Dimmer.NAMESPACE)) summary.dim = d[Dimmer.ATTR_BRIGHTNESS];
-  if (caps?.includes(Temperature.NAMESPACE)) summary.temp = d[Temperature.ATTR_TEMPERATURE];
+  if (caps?.includes(Temperature.NAMESPACE)) summary.temp = round1(d[Temperature.ATTR_TEMPERATURE]);
   if (caps?.includes(RelativeHumidity.NAMESPACE)) summary.humid = d[RelativeHumidity.ATTR_HUMIDITY];
   if (caps?.includes(Thermostat.NAMESPACE)) {
     summary.mode = d[Thermostat.ATTR_HVACMODE];
-    summary.heat = d[Thermostat.ATTR_HEATSETPOINT];
-    summary.cool = d[Thermostat.ATTR_COOLSETPOINT];
+    summary.heat = round1(d[Thermostat.ATTR_HEATSETPOINT]);
+    summary.cool = round1(d[Thermostat.ATTR_COOLSETPOINT]);
   }
   if (caps?.includes(Contact.NAMESPACE)) summary.contact = d[Contact.ATTR_CONTACT];
   if (caps?.includes(Motion.NAMESPACE)) summary.motion = d[Motion.ATTR_MOTION];

@@ -196,8 +196,8 @@ device_command(addr, "base:SetAttributes", {"swit:state": "ON"})
 # Lock a door
 device_command(addr, "base:SetAttributes", {"doorlock:lockstate": "LOCKED"})
 
-# Set thermostat
-device_command(addr, "base:SetAttributes", {"therm:heatsetpoint": 72})
+# Set thermostat heat to 21°C (setpoints are always Celsius)
+device_command(addr, "base:SetAttributes", {"therm:heatsetpoint": 21})
 
 # Dim a light to 50%
 device_command(addr, "base:SetAttributes", {"dim:brightness": 50})
