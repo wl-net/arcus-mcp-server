@@ -28,10 +28,11 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-interface BridgeMessage {
+export interface BridgeMessage {
   type?: string;
   headers: {
     destination?: string;
+    source?: string;
     correlationId?: string;
     isRequest?: boolean;
     [key: string]: unknown;
@@ -44,9 +45,16 @@ interface BridgeMessage {
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const SOURCE = "CLNT:mcp:1";
 const MAX_EVENT_BUFFER = 100;
 const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
+
+/** Throw if a response is an Error reply, which sendRequest resolves rather than rejects */
+export function throwIfErrorResponse(resp: BridgeMessage, request: string): BridgeMessage {
+  if (resp.payload?.messageType === "Error") {
+    throw new Error(`${request} failed: ${JSON.stringify(resp.payload.attributes)}`);
+  }
+  return resp;
+}
 
 const debug = !!process.env.ARCUS_DEBUG;
 function log(msg: string): void {
@@ -72,6 +80,25 @@ export class BridgeClient {
   private _reconnecting = false;
   private _reconnectAttempt = 0;
   private _intentionalClose = false;
+  private _connected = false;
+
+  /** Optional callback fired for every unsolicited (non-response) message */
+  onEvent: ((event: BridgeEvent) => void) | null = null;
+
+  /**
+   * Optional callback fired when an established session drops (false) and when an
+   * automatic reconnect is ready for requests again (true). Not fired for the initial connect.
+   */
+  onConnectionChange: ((connected: boolean) => void) | null = null;
+
+  private _setConnected(connected: boolean): void {
+    // Reset backoff only once the session is usable, not merely when the socket
+    // opens, so a reconnect that keeps failing setup still backs off.
+    if (connected) this._reconnectAttempt = 0;
+    if (this._connected === connected) return;
+    this._connected = connected;
+    this.onConnectionChange?.(connected);
+  }
 
   get session(): SessionInfo | null {
     return this._session;
@@ -96,7 +123,10 @@ export class BridgeClient {
 
   async fetchProductCatalog(): Promise<void> {
     if (this._productCatalog) return;
-    const resp = await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETPRODUCTS, {});
+    const resp = throwIfErrorResponse(
+      await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETPRODUCTS, {}),
+      ProductCatalog.CMD_GETPRODUCTS,
+    );
     const products = resp.payload.attributes.products as Array<Record<string, unknown>> | undefined;
     const catalog = new Map<string, { batterySize: string; batteryNum: number }>();
     if (products) {
@@ -125,14 +155,19 @@ export class BridgeClient {
   }
 
   private bufferEvent(msg: BridgeMessage): void {
-    this._events.push({
+    const event: BridgeEvent = {
       timestamp: Date.now(),
       messageType: msg.payload.messageType,
-      source: msg.headers.destination as string | undefined,
+      source: (msg.headers.source ?? msg.headers.destination) as string | undefined,
       attributes: msg.payload.attributes,
-    });
+    };
+    this._events.push(event);
     if (this._events.length > MAX_EVENT_BUFFER) {
       this._events = this._events.slice(-MAX_EVENT_BUFFER);
+    }
+    // Fire the onEvent callback
+    if (this.onEvent) {
+      this.onEvent(event);
     }
   }
 
@@ -152,7 +187,6 @@ export class BridgeClient {
     }
 
     const setCookie = res.headers.getSetCookie?.() ?? [res.headers.get("set-cookie") ?? ""];
-    dbg(`Set-Cookie headers: ${JSON.stringify(setCookie)}`);
     for (const cookie of setCookie) {
       const match = cookie.match(/irisAuthToken=([^;]+)/);
       if (match) {
@@ -183,7 +217,6 @@ export class BridgeClient {
 
   connectApiServer(baseUrl: string, apiKey: string): Promise<SessionInfo> {
     this._baseUrl = baseUrl;
-    this.token = apiKey;
     this._wsPath = "/apibus";
     this._authHeaders = { Authorization: `Bearer ${apiKey}` };
     this._autoPlace = true;
@@ -202,12 +235,11 @@ export class BridgeClient {
 
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(wsUrl, {
-        headers: this._authHeaders,
+        headers: { ...this._authHeaders },
       });
 
       this.ws.on("open", () => {
         log("WebSocket connected");
-        this._reconnectAttempt = 0;
       });
 
       this.ws.on("ping", (data) => {
@@ -239,14 +271,28 @@ export class BridgeClient {
           };
           log(`Session created — personId=${this._session.personId}, ${this._session.places.length} place(s)`);
 
-          // Re-set active place after reconnect (skip for api-server — place is auto-set)
+          // Re-set active place after reconnect (skip for api-server mode)
           if (this._reconnecting && this._activePlaceId && !this._autoPlace) {
             const placeId = this._activePlaceId;
+            const ws = this.ws;
             log(`Reconnected — re-setting active place ${placeId}`);
-            this.sendRequest("SERV:sess:", SessionService.CMD_SETACTIVEPLACE, { placeId }).then(
-              () => log("Active place restored after reconnect"),
-              (err) => log(`Failed to restore active place: ${err.message}`),
-            );
+            this.sendRequest("SERV:sess:", SessionService.CMD_SETACTIVEPLACE, { placeId })
+              .then((resp) => {
+                throwIfErrorResponse(resp, SessionService.CMD_SETACTIVEPLACE);
+                log("Active place restored after reconnect");
+                this._setConnected(true);
+              })
+              .catch((err) => {
+                // Without an active place the session is useless; close it so the
+                // normal reconnect-with-backoff path retries.
+                log(`Failed to restore active place: ${err.message} — closing to retry`);
+                ws?.close();
+              });
+          } else if (this._reconnecting) {
+            this._setConnected(true);
+          } else {
+            // Initial connect: the caller finishes setup, so don't notify
+            this._connected = true;
           }
           this._reconnecting = false;
 
@@ -263,7 +309,7 @@ export class BridgeClient {
           this.pending.delete(corrId);
           entry.resolve(msg);
         } else {
-          dbg(`Unmatched message: type=${msg.payload?.messageType} corrId=${corrId}`);
+          dbg(`Unmatched message: type=${msg.payload?.messageType}`);
           this.bufferEvent(msg);
         }
       });
@@ -290,9 +336,10 @@ export class BridgeClient {
         }
 
         this._session = null;
+        this._setConnected(false);
 
         // Auto-reconnect unless intentionally closed
-        if (!this._intentionalClose && this._baseUrl && this.token) {
+        if (!this._intentionalClose && this._baseUrl && (this.token || this._autoPlace)) {
           this._scheduleReconnect();
         }
       });
@@ -322,7 +369,7 @@ export class BridgeClient {
   sendRequest(
     destination: string,
     messageType: string,
-    attributes: Record<string, unknown> = {}
+    attributes: Record<string, unknown> = {},
   ): Promise<BridgeMessage> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("WebSocket is not connected");
