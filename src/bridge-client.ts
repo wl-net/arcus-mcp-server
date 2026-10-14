@@ -22,6 +22,12 @@ export interface SessionInfo {
   places: Place[];
 }
 
+interface ConnectionWaiter {
+  resolve: () => void;
+  reject: (reason: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -90,6 +96,7 @@ export class BridgeClient {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while a reconnect attempt is connecting (between the timer firing and SessionCreated) */
   private _reconnectInFlight = false;
+  private _connectionWaiters = new Set<ConnectionWaiter>();
 
   constructor(options: BridgeClientOptions = {}) {
     this._reconnectDelays = options.reconnectDelays ?? RECONNECT_DELAYS;
@@ -107,7 +114,14 @@ export class BridgeClient {
   private _setConnected(connected: boolean): void {
     // Reset backoff only once the session is usable, not merely when the socket
     // opens, so a reconnect that keeps failing setup still backs off.
-    if (connected) this._reconnectAttempt = 0;
+    if (connected) {
+      this._reconnectAttempt = 0;
+      for (const waiter of this._connectionWaiters) {
+        clearTimeout(waiter.timer);
+        waiter.resolve();
+      }
+      this._connectionWaiters.clear();
+    }
     if (this._connected === connected) return;
     this._connected = connected;
     this.onConnectionChange?.(connected);
@@ -121,6 +135,34 @@ export class BridgeClient {
   /** True while an automatic reconnect is scheduled or in progress */
   get reconnecting(): boolean {
     return this._reconnecting;
+  }
+
+  /**
+   * Resolve once an automatic reconnect has made the session usable again.
+   * Rejects after timeoutMs, or if the client is disconnected meanwhile.
+   */
+  waitForConnection(timeoutMs: number): Promise<void> {
+    if (this._connected) return Promise.resolve();
+    if (!this._reconnecting) return Promise.reject(new Error("Not connected and no reconnect in progress"));
+    return new Promise((resolve, reject) => {
+      const waiter: ConnectionWaiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this._connectionWaiters.delete(waiter);
+          reject(new Error(`Timed out after ${timeoutMs / 1000}s waiting for the bridge to reconnect`));
+        }, timeoutMs),
+      };
+      this._connectionWaiters.add(waiter);
+    });
+  }
+
+  private _rejectConnectionWaiters(err: Error): void {
+    for (const waiter of this._connectionWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(err);
+    }
+    this._connectionWaiters.clear();
   }
 
   get session(): SessionInfo | null {
@@ -477,6 +519,7 @@ export class BridgeClient {
     this.ws = null;
     ws?.close();
     this._rejectPending(new Error("Disconnected"));
+    this._rejectConnectionWaiters(new Error("Disconnected"));
     this._session = null;
     this._connected = false;
   }
