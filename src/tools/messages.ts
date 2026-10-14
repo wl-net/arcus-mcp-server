@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SessionService } from "../capabilities.js";
 import { textResult, request, preflight, blockedMessage, writes, toolRegistrar, type ToolContext } from "./shared.js";
 
 export function registerMessageTools(server: McpServer, ctx: ToolContext): void {
@@ -31,6 +32,10 @@ export function registerMessageTools(server: McpServer, ctx: ToolContext): void 
       const notReady = await preflight(ctx, { write: true, place: false });
       if (notReady) return notReady;
       const resp = await request(client, destination, messageType, attributes);
+      // Keep the local active place in step, or later tools would target the old place
+      if (messageType === SessionService.CMD_SETACTIVEPLACE && typeof attributes.placeId === "string") {
+        client.setActivePlace(attributes.placeId);
+      }
       return textResult(JSON.stringify(resp.payload));
     }
   );

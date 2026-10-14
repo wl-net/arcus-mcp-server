@@ -157,7 +157,7 @@ claude mcp remove arcus
 ## Safety Guards
 
 ### Write Guard
-All mutating operations require `ARCUS_ENABLE_WRITE=1`. Without it, device commands, alarm control, scene firing, rule creation/deletion, hub reboot, and pairing are blocked.
+All mutating operations require `ARCUS_ENABLE_WRITE=1`. Without it, device commands, device identify, alarm control, scene firing, rule creation/deletion, hub reboot, Zigbee scans, and pairing are blocked.
 
 ### Place Guard
 Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `device_command`, `list_history`, `list_persons`, `delete_rule`, `fire_scene`, `get_hub`, `reboot_hub`) check that a place is set before making any bridge requests. This prevents "Tsk Tsk, you are not authorized" errors that trigger security alerts on the backend.
@@ -174,7 +174,7 @@ Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `dev
 The platform answers a refused or failed request with an `Error` message rather than failing the request. Every tool reports these (and timeouts or a dropped connection) as an MCP error result (`isError: true`) with the platform's message and code, so a refused unlock or disarm never looks like success. `get_devices` reports per-device failures inline instead.
 
 ### Tool Annotations
-Every tool carries MCP annotations so clients can decide what to auto-approve. Lookups are `readOnlyHint: true`. Writes declare `destructiveHint` (true for unlocking, lock PIN changes, disarming, disabling or deleting rules, firing scenes, rebooting the hub, removing Z-Wave nodes, `device_command` and `send_message`) and `idempotentHint`. `list_events` is not marked read-only because it drains the event buffer. Only `send_message` is `openWorldHint: true`, since it can reach any platform destination.
+Every tool carries MCP annotations so clients can decide what to auto-approve. Lookups are `readOnlyHint: true`. Writes declare `destructiveHint` (true for unlocking, lock PIN changes, disarming, disabling or deleting rules, firing scenes, rebooting the hub, removing Z-Wave nodes, `device_command` and `send_message`) and `idempotentHint`. `list_events` is not marked read-only because it drains the event buffer. Sending `sess:SetActivePlace` through `send_message` also switches the active place used by the other tools. Only `send_message` is `openWorldHint: true`, since it can reach any platform destination.
 
 ## Key Design Decisions
 

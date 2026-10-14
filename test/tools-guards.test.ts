@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { BLOCKED_MESSAGE_TYPES, WRITE_BLOCKED_MSG } from "../src/tools/shared.js";
-import { FakeBridgeClient, startTools, text, withEnv, type Harness } from "./tools-harness.js";
+import { FakeBridgeClient, errorReply, startTools, text, withEnv, type Harness } from "./tools-harness.js";
 
 describe("tool guards", () => {
   let h: Harness | undefined;
@@ -17,6 +17,8 @@ describe("tool guards", () => {
         ["doorlock_buzz_in", { deviceAddress: "DRIV:dev:1" }],
         ["disarm_alarm", {}],
         ["send_message", { destination: "SERV:sess:", messageType: "sess:Ping" }],
+        ["identify_device", { deviceAddress: "DRIV:dev:1" }],
+        ["zigbee_scan", {}],
       ] as const) {
         const result = await h.call(name, args);
         assert.equal(result.isError, true, name);
@@ -48,6 +50,30 @@ describe("tool guards", () => {
         assert.match(text(viaDevice), /Blocked/);
       }
       assert.equal(h.fake.requests.length, 0);
+    });
+  });
+
+  it("follows a raw sess:SetActivePlace so later tools target the new place", async () => {
+    await withEnv({ ARCUS_ENABLE_WRITE: "1" }, async () => {
+      const fake = new FakeBridgeClient();
+      h = await startTools(fake);
+      const result = await h.call("send_message", {
+        destination: "SERV:sess:", messageType: "sess:SetActivePlace", attributes: { placeId: "place-2" },
+      });
+      assert.equal(result.isError, undefined, text(result));
+      assert.equal(fake.activePlaceId, "place-2");
+    });
+  });
+
+  it("keeps the active place when a raw sess:SetActivePlace is refused", async () => {
+    await withEnv({ ARCUS_ENABLE_WRITE: "1" }, async () => {
+      const fake = new FakeBridgeClient(() => errorReply("error.notfound", "No such place"));
+      h = await startTools(fake);
+      const result = await h.call("send_message", {
+        destination: "SERV:sess:", messageType: "sess:SetActivePlace", attributes: { placeId: "place-2" },
+      });
+      assert.equal(result.isError, true);
+      assert.equal(fake.activePlaceId, "place-1");
     });
   });
 
