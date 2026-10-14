@@ -48,6 +48,11 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_EVENT_BUFFER = 100;
 const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
+export interface BridgeClientOptions {
+  /** Backoff between automatic reconnect attempts; the last delay repeats */
+  reconnectDelays?: number[];
+}
+
 /** Throw if a response is an Error reply, which sendRequest resolves rather than rejects */
 export function throwIfErrorResponse(resp: BridgeMessage, request: string): BridgeMessage {
   if (resp.payload?.messageType === "Error") {
@@ -81,6 +86,14 @@ export class BridgeClient {
   private _reconnectAttempt = 0;
   private _intentionalClose = false;
   private _connected = false;
+  private _reconnectDelays: number[];
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while a reconnect attempt is connecting (between the timer firing and SessionCreated) */
+  private _reconnectInFlight = false;
+
+  constructor(options: BridgeClientOptions = {}) {
+    this._reconnectDelays = options.reconnectDelays ?? RECONNECT_DELAYS;
+  }
 
   /** Optional callback fired for every unsolicited (non-response) message */
   onEvent: ((event: BridgeEvent) => void) | null = null;
@@ -98,6 +111,16 @@ export class BridgeClient {
     if (this._connected === connected) return;
     this._connected = connected;
     this.onConnectionChange?.(connected);
+  }
+
+  /** True while the session is usable (after an automatic reconnect, once the active place is restored) */
+  get connected(): boolean {
+    return this._connected;
+  }
+
+  /** True while an automatic reconnect is scheduled or in progress */
+  get reconnecting(): boolean {
+    return this._reconnecting;
   }
 
   get session(): SessionInfo | null {
@@ -211,6 +234,7 @@ export class BridgeClient {
     this._authHeaders = { Cookie: `irisAuthToken=${authToken}` };
     this._autoPlace = false;
     this._intentionalClose = false;
+    this._cancelReconnect();
 
     return this._doConnect();
   }
@@ -221,6 +245,7 @@ export class BridgeClient {
     this._authHeaders = { Authorization: `Bearer ${apiKey}` };
     this._autoPlace = true;
     this._intentionalClose = false;
+    this._cancelReconnect();
 
     return this._doConnect();
   }
@@ -234,22 +259,23 @@ export class BridgeClient {
     dbg(`WebSocket connecting to ${wsUrl}`);
 
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(wsUrl, {
+      const ws = new WebSocket(wsUrl, {
         headers: { ...this._authHeaders },
       });
+      this.ws = ws;
 
-      this.ws.on("open", () => {
+      ws.on("open", () => {
         log("WebSocket connected");
       });
 
-      this.ws.on("ping", (data) => {
+      ws.on("ping", (data) => {
         dbg("ping received, sending pong");
-        this.ws?.pong(data);
+        ws.pong(data);
       });
 
       let settled = false;
 
-      this.ws.on("message", (data) => {
+      ws.on("message", (data) => {
         const raw = data.toString();
         dbg(`<-- ${raw.substring(0, 500)}${raw.length > 500 ? "..." : ""}`);
 
@@ -274,27 +300,28 @@ export class BridgeClient {
           // Re-set active place after reconnect (skip for api-server mode)
           if (this._reconnecting && this._activePlaceId && !this._autoPlace) {
             const placeId = this._activePlaceId;
-            const ws = this.ws;
             log(`Reconnected — re-setting active place ${placeId}`);
             this.sendRequest("SERV:sess:", SessionService.CMD_SETACTIVEPLACE, { placeId })
               .then((resp) => {
                 throwIfErrorResponse(resp, SessionService.CMD_SETACTIVEPLACE);
+                if (ws !== this.ws) return;
                 log("Active place restored after reconnect");
+                this._reconnecting = false;
                 this._setConnected(true);
               })
               .catch((err) => {
                 // Without an active place the session is useless; close it so the
                 // normal reconnect-with-backoff path retries.
                 log(`Failed to restore active place: ${err.message} — closing to retry`);
-                ws?.close();
+                ws.close();
               });
           } else if (this._reconnecting) {
+            this._reconnecting = false;
             this._setConnected(true);
           } else {
             // Initial connect: the caller finishes setup, so don't notify
             this._connected = true;
           }
-          this._reconnecting = false;
 
           resolve(this._session);
           return;
@@ -314,7 +341,7 @@ export class BridgeClient {
         }
       });
 
-      this.ws.on("error", (err) => {
+      ws.on("error", (err) => {
         log(`WebSocket error: ${err.message}`);
         if (!settled) {
           settled = true;
@@ -322,24 +349,26 @@ export class BridgeClient {
         }
       });
 
-      this.ws.on("close", (code, reason) => {
+      ws.on("close", (code, reason) => {
         log(`WebSocket closed (code=${code}, reason=${reason.toString()})`);
-        // Reject all pending requests
-        for (const [id, entry] of this.pending) {
-          clearTimeout(entry.timer);
-          entry.reject(new Error("WebSocket closed"));
-          this.pending.delete(id);
-        }
         if (!settled) {
           settled = true;
           reject(new Error("WebSocket closed before SessionCreated"));
         }
+        // A socket that has been replaced (by disconnect() or a newer connect) no
+        // longer owns the client state
+        if (ws !== this.ws) return;
+        this.ws = null;
 
+        this._rejectPending(new Error("WebSocket closed"));
         this._session = null;
+        const wasConnected = this._connected;
         this._setConnected(false);
 
-        // Auto-reconnect unless intentionally closed
-        if (!this._intentionalClose && this._baseUrl && (this.token || this._autoPlace)) {
+        // Auto-reconnect when an established session drops, or when a reconnect
+        // fails after SessionCreated (e.g. restoring the active place). A failed
+        // initial connect is reported to the caller instead.
+        if (!this._intentionalClose && (wasConnected || this._reconnecting)) {
           this._scheduleReconnect();
         }
       });
@@ -347,16 +376,25 @@ export class BridgeClient {
   }
 
   private _scheduleReconnect(): void {
-    const delay = RECONNECT_DELAYS[Math.min(this._reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+    // One reconnect chain at a time: a failed attempt reports both an error and a close
+    if (this._reconnectTimer || this._reconnectInFlight) return;
+    const delays = this._reconnectDelays;
+    const delay = delays[Math.min(this._reconnectAttempt, delays.length - 1)];
     this._reconnectAttempt++;
     this._reconnecting = true;
     log(`Reconnecting in ${delay / 1000}s (attempt ${this._reconnectAttempt})...`);
 
-    setTimeout(() => {
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
       if (this._intentionalClose) return;
+      this._reconnectInFlight = true;
       this._doConnect().then(
-        () => log("Reconnected successfully"),
+        () => {
+          this._reconnectInFlight = false;
+          log("Reconnected successfully");
+        },
         (err) => {
+          this._reconnectInFlight = false;
           log(`Reconnect failed: ${err.message}`);
           if (!this._intentionalClose) {
             this._scheduleReconnect();
@@ -364,6 +402,23 @@ export class BridgeClient {
         },
       );
     }, delay);
+  }
+
+  private _cancelReconnect(): void {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._reconnecting = false;
+    this._reconnectAttempt = 0;
+  }
+
+  private _rejectPending(err: Error): void {
+    for (const [id, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(err);
+      this.pending.delete(id);
+    }
   }
 
   sendRequest(
@@ -414,12 +469,15 @@ export class BridgeClient {
     });
   }
 
+  /** Close the connection for good: cancels any pending reconnect and fails in-flight requests. */
   disconnect(): void {
     this._intentionalClose = true;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    this._cancelReconnect();
+    const ws = this.ws;
+    this.ws = null;
+    ws?.close();
+    this._rejectPending(new Error("Disconnected"));
     this._session = null;
+    this._connected = false;
   }
 }
