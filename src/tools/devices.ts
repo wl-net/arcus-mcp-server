@@ -128,7 +128,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
       annotations: writes({ destructive: false, idempotent: false }),
     },
     async ({ deviceAddress }) => {
-      const notReady = await preflight(ctx);
+      const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
       const resp = await request(client, deviceAddress, Identify.CMD_IDENTIFY);
       return emptyOk(resp, `Device ${deviceAddress} is identifying itself.`);

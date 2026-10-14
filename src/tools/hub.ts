@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { Device, DeviceAdvanced, HubAdvanced, HubDebug, HubZigbee, HubZwave, Place } from "../capabilities.js";
 import { textResult, request, preflight, getHubAddress, READ_ONLY, writes, emptyOk, toolRegistrar, type ToolContext } from "./shared.js";
 import { summarizeHub, zwaveNodeId, summarizeZwaveNetwork } from "./summarize.js";
@@ -150,8 +151,15 @@ export function registerHubTools(server: McpServer, ctx: ToolContext): void {
 
   // ── Zigbee and hub debug reads: hub address → one request → raw attributes
   function hubRead(name: string, title: string, description: string, messageType: string): void {
-    tool(name, { title, description, inputSchema: {}, annotations: READ_ONLY }, async () => {
-      const notReady = await preflight(ctx);
+    hubCommand(name, title, description, messageType, READ_ONLY);
+  }
+
+  function hubCommand(
+    name: string, title: string, description: string, messageType: string, annotations: ToolAnnotations
+  ): void {
+    const write = annotations.readOnlyHint !== true;
+    tool(name, { title, description, inputSchema: {}, annotations }, async () => {
+      const notReady = await preflight(ctx, { write });
       if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
@@ -162,7 +170,11 @@ export function registerHubTools(server: McpServer, ctx: ToolContext): void {
 
   hubRead("zigbee_network_info", "Zigbee network info", "Get Zigbee network information", HubZigbee.CMD_NETWORKINFORMATION);
   hubRead("zigbee_get_stats", "Zigbee radio stats", "Get Zigbee radio statistics", HubZigbee.CMD_GETSTATS);
-  hubRead("zigbee_scan", "Zigbee scan", "Scan the Zigbee network for devices and channel information", HubZigbee.CMD_SCAN);
+  // A scan has the radio sweep channels, so it sits behind the write gate
+  hubCommand(
+    "zigbee_scan", "Zigbee scan", "Scan the Zigbee network for devices and channel information",
+    HubZigbee.CMD_SCAN, writes({ destructive: false, idempotent: true })
+  );
 
   // ── Admin-only tools (ARCUS_ENABLE_ADMIN=1) ────────────────────────
   if (process.env.ARCUS_ENABLE_ADMIN) {

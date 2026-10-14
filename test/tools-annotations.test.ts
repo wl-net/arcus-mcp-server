@@ -63,7 +63,7 @@ describe("tool annotations", () => {
     for (const name of ["list_devices", "get_device", "get_hub", "list_care_status", "zwave_network_info", "hub_files"]) {
       assert.equal(tools.get(name)!.annotations!.readOnlyHint, true, name);
     }
-    for (const name of ["list_events", "set_active_place", "identify_device", "arm_alarm", "search_devices"]) {
+    for (const name of ["list_events", "set_active_place", "identify_device", "arm_alarm", "search_devices", "zigbee_scan"]) {
       assert.equal(tools.get(name)!.annotations!.readOnlyHint, false, name);
     }
   });
