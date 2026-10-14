@@ -1,6 +1,7 @@
-import { z } from "zod";
+import { z, type ZodRawShape, type ZodTypeAny } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { BridgeClient } from "./bridge-client.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { BridgeClient, BridgeMessage } from "./bridge-client.js";
 import {
   Account, AlarmIncident, AlarmSubsystem, Base, Contact, Device, DeviceAdvanced,
   DeviceConnection, DevicePower, Dimmer, DoorLock, Glass, Hub, HubAdvanced,
@@ -11,8 +12,6 @@ import {
 } from "./capabilities.js";
 
 const SESS_DEST = "SERV:sess:";
-const WRITE_ENABLED = !!process.env.ARCUS_ENABLE_WRITE;
-const ADMIN_ENABLED = !!process.env.ARCUS_ENABLE_ADMIN;
 
 // Destructive message types that should never be sent
 const BLOCKED_MESSAGE_TYPES = new Set([
@@ -232,27 +231,121 @@ function summarizeZwaveNetwork(
   return result;
 }
 
+// ── Guards and error handling ─────────────────────────────────────────
+
 const WRITE_BLOCKED_MSG = "Write operations are disabled. Set ARCUS_ENABLE_WRITE=1 to enable device commands, alarm control, and other actions.";
 
-type ToolError = { content: Array<{ type: "text"; text: string }>; isError: true };
+type ToolError = CallToolResult & { isError: true };
 
-function requireWrite(): ToolError | null {
-  if (WRITE_ENABLED) return null;
-  return { content: [{ type: "text" as const, text: WRITE_BLOCKED_MSG }], isError: true };
+/** Shared state every tool handler needs */
+interface ToolContext {
+  client: BridgeClient;
+  ensureConnected: () => Promise<void>;
 }
 
-function requirePlace(client: BridgeClient): ToolError | null {
-  if (client.activePlaceId) return null;
-  return { content: [{ type: "text" as const, text: "No active place set. Call set_active_place first." }], isError: true };
+function textResult(text: string): CallToolResult {
+  return { content: [{ type: "text", text }] };
+}
+
+function errorResult(text: string): ToolError {
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** True if Arcus answered the request with an Error message */
+function isErrorResponse(resp: BridgeMessage): boolean {
+  return resp.payload?.messageType === "Error";
+}
+
+/** Readable description of an Error reply, e.g. "doorlock:BuzzIn failed: Lock is jammed (code: lock.jammed)" */
+function describeErrorResponse(resp: BridgeMessage, request: string): string {
+  const attrs = resp.payload.attributes ?? {};
+  const { code, message } = attrs;
+  if (code == null && message == null) return `${request} failed: ${JSON.stringify(attrs)}`;
+  return `${request} failed: ${message ?? "(no message)"}${code != null ? ` (code: ${code})` : ""}`;
+}
+
+/**
+ * sendRequest resolves (rather than rejects) when Arcus replies with an Error
+ * message. Throw instead, so the tool wrapper reports it with isError.
+ */
+function checkResponse(resp: BridgeMessage, request: string): BridgeMessage {
+  if (isErrorResponse(resp)) throw new Error(describeErrorResponse(resp, request));
+  return resp;
+}
+
+/** Send a request and throw if Arcus replies with an Error */
+async function request(
+  client: BridgeClient,
+  destination: string,
+  messageType: string,
+  attributes: Record<string, unknown> = {}
+): Promise<BridgeMessage> {
+  return checkResponse(await client.sendRequest(destination, messageType, attributes), messageType);
+}
+
+/**
+ * Wrap a tool handler so anything it throws (Error replies, timeouts,
+ * "WebSocket is not connected", connect failures) becomes an isError result.
+ */
+function withErrorHandling<A extends unknown[]>(
+  handler: (...args: A) => Promise<CallToolResult>
+): (...args: A) => Promise<CallToolResult> {
+  return async (...args: A) => {
+    try {
+      return await handler(...args);
+    } catch (err) {
+      return errorResult(errorMessage(err));
+    }
+  };
+}
+
+/**
+ * Common pre-flight checks. Order matters: the write gate first (no point
+ * connecting for a call that will be refused), then connect, then the active
+ * place, since API-key mode selects the place while connecting.
+ */
+async function preflight(
+  ctx: ToolContext,
+  opts: { write?: boolean; place?: boolean } = {}
+): Promise<ToolError | null> {
+  if (opts.write && !process.env.ARCUS_ENABLE_WRITE) return errorResult(WRITE_BLOCKED_MSG);
+  await ctx.ensureConnected();
+  if (opts.place !== false && !ctx.client.activePlaceId) {
+    return errorResult("No active place set. Call set_active_place first.");
+  }
+  return null;
+}
+
+function blockedMessage(messageType: string): ToolError | null {
+  if (!BLOCKED_MESSAGE_TYPES.has(messageType)) return null;
+  return errorResult(`Blocked: "${messageType}" is a destructive operation and is not allowed.`);
+}
+
+/** Run fn, turning anything it throws (synchronously or not) into { error } */
+async function attempt<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
+  try {
+    return await fn();
+  } catch (err) {
+    return { error: errorMessage(err) };
+  }
 }
 
 async function getHubAddress(client: BridgeClient): Promise<{ address: string; id: string } | ToolError> {
-  const hubResp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
+  const hubResp = await request(client, client.placeDestination, Place.CMD_GETHUB);
   const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
   if (!hub) {
-    return { content: [{ type: "text" as const, text: "No hub found at active place." }], isError: true };
+    return errorResult("No hub found at active place.");
   }
   return { address: hub[Base.ATTR_ADDRESS] as string, id: hub[Base.ATTR_ID] as string };
+}
+
+/** Text for a command whose success reply is EmptyMessage */
+function emptyOk(resp: BridgeMessage, okText: string): CallToolResult {
+  return textResult(resp.payload.messageType === "EmptyMessage" ? okText : JSON.stringify(resp.payload));
 }
 
 export function registerTools(
@@ -260,75 +353,89 @@ export function registerTools(
   client: BridgeClient,
   ensureConnected: () => Promise<void>
 ): void {
+  const ctx: ToolContext = { client, ensureConnected };
+
+  // Every handler goes through withErrorHandling
+  function tool<Args extends ZodRawShape>(
+    name: string,
+    description: string,
+    schema: Args,
+    handler: (args: z.objectOutputType<Args, ZodTypeAny>) => Promise<CallToolResult>
+  ): void {
+    server.tool(name, description, schema, withErrorHandling(handler) as never);
+  }
+
   // ── list_places ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_places",
     "List all places (homes/locations) accessible to the logged-in user",
     {},
     async () => {
-      await ensureConnected();
+      const notReady = await preflight(ctx, { place: false });
+      if (notReady) return notReady;
       const personId = client.session?.personId;
-      if (!personId) {
-        return { content: [{ type: "text", text: "Not connected to bridge" }], isError: true };
-      }
-      const resp = await client.sendRequest(
-        `SERV:person:${personId}`,
-        Person.CMD_LISTAVAILABLEPLACES,
-        {}
-      );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.places) }] };
+      if (!personId) return errorResult("Not connected to bridge");
+      const resp = await request(client, `SERV:person:${personId}`, Person.CMD_LISTAVAILABLEPLACES);
+      return textResult(JSON.stringify(resp.payload.attributes.places));
     }
   );
 
   // ── set_active_place ─────────────────────────────────────────────────
-  server.tool(
+  tool(
     "set_active_place",
     "Set the active place. Must be called before device or scene operations.",
     { placeId: z.string().describe("The place ID to activate (UUID)") },
     async ({ placeId }) => {
-      await ensureConnected();
+      const notReady = await preflight(ctx, { place: false });
+      if (notReady) return notReady;
 
       // Phase 1: SetActivePlace + GetAttributes (person) in parallel
       const personId = client.session?.personId;
-      const [resp, personResp] = await Promise.all([
+      const [resp, person] = await Promise.all([
         client.sendRequest(SESS_DEST, SessionService.CMD_SETACTIVEPLACE, { placeId }),
         personId
-          ? client.sendRequest(`SERV:person:${personId}`, Base.CMD_GETATTRIBUTES, {})
+          ? attempt(() => request(client, `SERV:person:${personId}`, Base.CMD_GETATTRIBUTES))
           : Promise.resolve(null),
       ]);
+      // Only switch the local place once Arcus has accepted it
+      checkResponse(resp, SessionService.CMD_SETACTIVEPLACE);
       client.setActivePlace(placeId);
 
-      // Phase 2: After SetActivePlaceResponse, send GetHub + ListSubsystems
+      // Phase 2: After SetActivePlaceResponse, send GetHub + ListSubsystems.
+      // The place is already active, so report failures here inline rather
+      // than failing the whole call.
       const placeDest = client.placeDestination;
-      const [hubResp, subsResp] = await Promise.all([
-        client.sendRequest(placeDest, Place.CMD_GETHUB, {}),
-        client.sendRequest("SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId }),
+      const [hub, subsystems] = await Promise.all([
+        attempt(async () => summarizeHub((await request(client, placeDest, Place.CMD_GETHUB)).payload.attributes)),
+        attempt(async () => {
+          const subsResp = await request(client, "SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId });
+          const subs = subsResp.payload.attributes.subsystems as Array<Record<string, unknown>> | undefined;
+          return subs?.map((s) => s[Subsystem.ATTR_NAME]) ?? [];
+        }),
       ]);
 
-      const subs = subsResp.payload.attributes.subsystems as Array<Record<string, unknown>> | undefined;
       const summary = {
         place: resp.payload.attributes,
-        ...(personResp ? { person: summarizePerson(personResp.payload.attributes) } : {}),
-        hub: summarizeHub(hubResp.payload.attributes),
-        subsystems: subs?.map((s) => s[Subsystem.ATTR_NAME]) ?? [],
+        ...(person && !("error" in person) ? { person: summarizePerson(person.payload.attributes) } : {}),
+        hub,
+        subsystems,
       };
 
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── list_history ────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_history",
     "List recent history entries at the active place",
     {
       limit: z.number().default(10).describe("Number of entries to return (default 10)"),
     },
     async ({ limit }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, Place.CMD_LISTHISTORYENTRIES, { limit });
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
+      const resp = await request(client, client.placeDestination, Place.CMD_LISTHISTORYENTRIES, { limit });
       const results = resp.payload.attributes.results as Array<Record<string, unknown>> | undefined;
       const summary = results
         ? results.map((e) => ({
@@ -338,20 +445,19 @@ export function registerTools(
             msg: e.shortMessage,
           }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── list_persons ────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_persons",
     "List all persons at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, Place.CMD_LISTPERSONS, {});
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
+      const resp = await request(client, client.placeDestination, Place.CMD_LISTPERSONS);
       const persons = resp.payload.attributes.persons as Array<Record<string, unknown>> | undefined;
       const summary = persons
         ? persons.map((p) => ({
@@ -362,50 +468,44 @@ export function registerTools(
             pin: p["person:hasPin"],
           }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── list_devices ─────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_devices",
     "List all devices at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const [resp] = await Promise.all([
-        client.sendRequest(client.placeDestination, Place.CMD_LISTDEVICES, {}),
+        request(client, client.placeDestination, Place.CMD_LISTDEVICES),
         client.fetchProductCatalog(),
       ]);
       const devices = resp.payload.attributes.devices as Array<Record<string, unknown>> | undefined;
       const catalog = client.productCatalog;
       const summary = devices ? devices.map((d) => summarizeDevice(d, catalog)) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── get_device ───────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "get_device",
     "Get full state and attributes of a specific device",
     { deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)") },
     async ({ deviceAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const resp = await client.sendRequest(
-        deviceAddress,
-        Base.CMD_GETATTRIBUTES,
-        {}
-      );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, Base.CMD_GETATTRIBUTES);
+      return textResult(JSON.stringify(resp.payload.attributes));
     }
   );
 
   // ── get_devices ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "get_devices",
     "Get full state and attributes of multiple devices in one call",
     {
@@ -414,30 +514,30 @@ export function registerTools(
         .describe("Array of device addresses (e.g. [\"DRIV:dev:abc-123\", \"DRIV:dev:def-456\"])"),
     },
     async ({ deviceAddresses }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       await client.fetchProductCatalog();
       const catalog = client.productCatalog;
+      // Per-address failures are reported inline so one bad address doesn't sink the batch
       const results = await Promise.all(
         deviceAddresses.map(async (addr) => {
           try {
             const resp = await client.sendRequest(addr, Base.CMD_GETATTRIBUTES, {});
-            if (resp.payload.messageType === "Error") {
+            if (isErrorResponse(resp)) {
               return { addr, error: resp.payload.attributes.message ?? resp.payload.attributes.code };
             }
             return { ...(summarizeDevice(resp.payload.attributes, catalog) as Record<string, unknown>), addr };
           } catch (err) {
-            return { addr, error: (err as Error).message };
+            return { addr, error: errorMessage(err) };
           }
         })
       );
-      return { content: [{ type: "text", text: JSON.stringify(results) }] };
+      return textResult(JSON.stringify(results));
     }
   );
 
   // ── device_command ───────────────────────────────────────────────────
-  server.tool(
+  tool(
     "device_command",
     `Send a command to a device. Examples:
 - Turn on switch: commandName="base:SetAttributes", attributes={"swit:state":"ON"}
@@ -453,55 +553,47 @@ export function registerTools(
         .describe("Command attributes as key-value pairs"),
     },
     async ({ deviceAddress, commandName, attributes }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
+      const blocked = blockedMessage(commandName);
       if (blocked) return blocked;
-      await ensureConnected();
-      if (BLOCKED_MESSAGE_TYPES.has(commandName)) {
-        return { content: [{ type: "text", text: `Blocked: "${commandName}" is a destructive operation and is not allowed.` }], isError: true };
-      }
-      const resp = await client.sendRequest(deviceAddress, commandName, attributes);
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, commandName, attributes);
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 
   // ── identify_device ──────────────────────────────────────────────────
-  server.tool(
+  tool(
     "identify_device",
     "Flash LED or play sound on a device to physically identify it",
     {
       deviceAddress: z.string().describe("Device address (e.g. DRIV:dev:abc-123)"),
     },
     async ({ deviceAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, Identify.CMD_IDENTIFY, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Device ${deviceAddress} is identifying itself.` : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, Identify.CMD_IDENTIFY);
+      return emptyOk(resp, `Device ${deviceAddress} is identifying itself.`);
     }
   );
 
   // ── doorlock_buzz_in ──────────────────────────────────────────────────
-  server.tool(
+  tool(
     "doorlock_buzz_in",
     "Temporarily unlock a door lock (auto-relocks in 30 seconds)",
     {
       deviceAddress: z.string().describe("Door lock device address (e.g. DRIV:dev:abc-123)"),
     },
     async ({ deviceAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_BUZZIN, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Door unlocked (will auto-relock in 30 seconds)." : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, DoorLock.CMD_BUZZIN);
+      return emptyOk(resp, "Door unlocked (will auto-relock in 30 seconds).");
     }
   );
 
   // ── doorlock_authorize_person ────────────────────────────────────────
-  server.tool(
+  tool(
     "doorlock_authorize_person",
     "Authorize a person's PIN on a door lock",
     {
@@ -509,18 +601,15 @@ export function registerTools(
       personId: z.string().describe("Person ID to authorize (use list_persons to find IDs)"),
     },
     async ({ deviceAddress, personId }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_AUTHORIZEPERSON, { personId });
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} authorized on lock.` : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, DoorLock.CMD_AUTHORIZEPERSON, { personId });
+      return emptyOk(resp, `Person ${personId} authorized on lock.`);
     }
   );
 
   // ── doorlock_deauthorize_person ────────────────────────────────────
-  server.tool(
+  tool(
     "doorlock_deauthorize_person",
     "Deauthorize a person's PIN from a door lock",
     {
@@ -528,108 +617,94 @@ export function registerTools(
       personId: z.string().describe("Person ID to deauthorize (use list_persons to find IDs)"),
     },
     async ({ deviceAddress, personId }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(deviceAddress, DoorLock.CMD_DEAUTHORIZEPERSON, { personId });
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Person ${personId} deauthorized from lock.` : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, deviceAddress, DoorLock.CMD_DEAUTHORIZEPERSON, { personId });
+      return emptyOk(resp, `Person ${personId} deauthorized from lock.`);
     }
   );
 
   // ── list_rules ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_rules",
     "List all rules at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_LISTRULES, { placeId });
+      const resp = await request(client, "SERV:rule:", RuleService.CMD_LISTRULES, { placeId });
       const rules = resp.payload.attributes.rules as Array<Record<string, unknown>> | undefined;
       const summary = rules ? rules.map(summarizeRule) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── delete_rule ────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "delete_rule",
     "Delete a rule at the active place",
     {
       ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
     },
     async ({ ruleAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, Rule.CMD_DELETE, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule deleted." : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, ruleAddress, Rule.CMD_DELETE);
+      return emptyOk(resp, "Rule deleted.");
     }
   );
 
   // ── enable_rule ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "enable_rule",
     "Enable a rule at the active place",
     {
       ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
     },
     async ({ ruleAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, Rule.CMD_ENABLE, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule enabled." : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, ruleAddress, Rule.CMD_ENABLE);
+      return emptyOk(resp, "Rule enabled.");
     }
   );
 
   // ── disable_rule ─────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "disable_rule",
     "Disable a rule at the active place",
     {
       ruleAddress: z.string().describe("Rule address (e.g. SERV:rule:place-id.1)"),
     },
     async ({ ruleAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(ruleAddress, Rule.CMD_DISABLE, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Rule disabled." : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, ruleAddress, Rule.CMD_DISABLE);
+      return emptyOk(resp, "Rule disabled.");
     }
   );
 
   // ── list_rule_templates ─────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_rule_templates",
     "List available rule templates at the active place. With no category, returns category names and counts. With a category, returns templates in that category.",
     {
       category: z.string().optional().describe("Filter by category name (e.g. \"Security Alarm\", \"Doors & Locks\"). Omit to list categories."),
     },
     async ({ category }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
 
       if (!category) {
         // Return categories and counts
-        const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_GETCATEGORIES, { placeId });
-        return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes.categories) }] };
+        const resp = await request(client, "SERV:rule:", RuleService.CMD_GETCATEGORIES, { placeId });
+        return textResult(JSON.stringify(resp.payload.attributes.categories));
       }
 
       // Return templates filtered by category
-      const resp = await client.sendRequest("SERV:rule:", RuleService.CMD_LISTRULETEMPLATES, { placeId });
+      const resp = await request(client, "SERV:rule:", RuleService.CMD_LISTRULETEMPLATES, { placeId });
       const templates = resp.payload.attributes.ruleTemplates as Array<Record<string, unknown>> | undefined;
       const summary = templates
         ? templates
@@ -641,30 +716,25 @@ export function registerTools(
               premium: t[RuleTemplate.ATTR_PREMIUM],
             }))
         : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── resolve_rule_template ──────────────────────────────────────────
-  server.tool(
+  tool(
     "resolve_rule_template",
     "Resolve a rule template's variables, returning the valid options for each selector (devices, persons, values, etc.)",
     {
       templateId: z.string().describe("Rule template ID (e.g. button-chime, 61da3b)"),
     },
     async ({ templateId }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest(
-        `SERV:ruletmpl:${templateId}`,
-        RuleTemplate.CMD_RESOLVE,
-        { placeId }
-      );
+      const resp = await request(client, `SERV:ruletmpl:${templateId}`, RuleTemplate.CMD_RESOLVE, { placeId });
       const selectors = resp.payload.attributes.selectors as Record<string, unknown> | undefined;
       if (!selectors) {
-        return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+        return textResult(JSON.stringify(resp.payload));
       }
       // Summarize selectors: show name/address pairs for LIST types
       const summary: Record<string, unknown> = {};
@@ -679,12 +749,12 @@ export function registerTools(
           summary[key] = sel;
         }
       }
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── create_rule ────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "create_rule",
     `Create a rule from a template. Use list_rule_templates to find available templates and their variables. The context maps template variables (e.g. "button", "switch", "contact") to device/person addresses.`,
     {
@@ -696,61 +766,53 @@ export function registerTools(
         .describe("Template variable mappings (e.g. {\"button\": \"DRIV:dev:abc-123\"})"),
     },
     async ({ templateId, name, description, context }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest(
+      const resp = await request(
+        client,
         `SERV:ruletmpl:${templateId}`,
         RuleTemplate.CMD_CREATERULE,
         { placeId, name, description, context }
       );
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 
   // ── list_incidents ──────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_incidents",
     "List alarm incidents at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest(
-        `SERV:subalarm:${placeId}`,
-        AlarmSubsystem.CMD_LISTINCIDENTS,
-        {}
-      );
+      const resp = await request(client, `SERV:subalarm:${placeId}`, AlarmSubsystem.CMD_LISTINCIDENTS);
       const incidents = resp.payload.attributes.incidents as Array<Record<string, unknown>> | undefined;
       const summary = incidents ? incidents.map(summarizeIncident) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── list_scenes ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_scenes",
     "List all scenes at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:scene:", SceneService.CMD_LISTSCENES, { placeId });
+      const resp = await request(client, "SERV:scene:", SceneService.CMD_LISTSCENES, { placeId });
       const scenes = resp.payload.attributes.scenes as Array<Record<string, unknown>> | undefined;
       const summary = scenes ? scenes.map(summarizeScene) : resp.payload.attributes;
-      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+      return textResult(JSON.stringify(summary));
     }
   );
 
   // ── arm_alarm ───────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "arm_alarm",
     `Arm the alarm at the active place. Modes: "ON" (full), "PARTIAL" (perimeter only). If bypass is true, triggered devices will be bypassed automatically.`,
     {
@@ -758,101 +820,77 @@ export function registerTools(
       bypass: z.boolean().default(false).describe("Bypass triggered devices if arming fails (default false)"),
     },
     async ({ mode, bypass }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
       const dest = `SERV:subalarm:${placeId}`;
       const msgType = bypass ? AlarmSubsystem.CMD_ARMBYPASSED : AlarmSubsystem.CMD_ARM;
       const resp = await client.sendRequest(dest, msgType, { mode });
 
-      if (resp.payload.messageType === "Error" && !bypass) {
-        const code = resp.payload.attributes.code as string;
-        if (code === "security.triggeredDevices") {
-          return {
-            content: [{
-              type: "text",
-              text: `Cannot arm — triggered devices: ${resp.payload.attributes.message}\nUse bypass=true to arm anyway.`,
-            }],
-            isError: true,
-          };
-        }
+      if (isErrorResponse(resp) && !bypass && resp.payload.attributes.code === "security.triggeredDevices") {
+        return errorResult(`Cannot arm — triggered devices: ${resp.payload.attributes.message}\nUse bypass=true to arm anyway.`);
       }
+      checkResponse(resp, msgType);
 
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 
   // ── disarm_alarm ──────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "disarm_alarm",
     "Disarm the alarm at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest(`SERV:subalarm:${placeId}`, AlarmSubsystem.CMD_DISARM, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Alarm disarmed." : JSON.stringify(resp.payload) }] };
+      const resp = await request(client, `SERV:subalarm:${placeId}`, AlarmSubsystem.CMD_DISARM);
+      return emptyOk(resp, "Alarm disarmed.");
     }
   );
 
   // ── get_hub ────────────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "get_hub",
     "Get hub status at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const resp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
-      return { content: [{ type: "text", text: JSON.stringify(summarizeHub(resp.payload.attributes)) }] };
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
+      const resp = await request(client, client.placeDestination, Place.CMD_GETHUB);
+      return textResult(JSON.stringify(summarizeHub(resp.payload.attributes)));
     }
   );
 
   // ── reboot_hub ──────────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "reboot_hub",
     "Reboot the hub at the active place. The hub will go offline temporarily.",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const hubResp = await client.sendRequest(client.placeDestination, Place.CMD_GETHUB, {});
-      const hub = hubResp.payload.attributes.hub as Record<string, unknown> | undefined;
-      if (!hub) {
-        return { content: [{ type: "text", text: "No hub found at active place." }], isError: true };
-      }
-      const hubAddress = hub[Base.ATTR_ADDRESS] as string;
-      const hubId = hub[Base.ATTR_ID] as string;
-      const resp = await client.sendRequest(hubAddress, HubAdvanced.CMD_REBOOT, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Hub ${hubId} is rebooting.` : JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const hub = await getHubAddress(client);
+      if ("isError" in hub) return hub;
+      const resp = await request(client, hub.address, HubAdvanced.CMD_REBOOT);
+      return emptyOk(resp, `Hub ${hub.id} is rebooting.`);
     }
   );
 
   // ── zwave_network_info ──────────────────────────────────────────────────
-  server.tool(
+  tool(
     "zwave_network_info",
     "Get Z-Wave network information including node metrics, neighbors, routing, and zombie nodes",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
       const [resp, devResp] = await Promise.all([
-        client.sendRequest(hub.address, HubZwave.CMD_NETWORKINFORMATION, {}),
-        client.sendRequest(client.placeDestination, Place.CMD_LISTDEVICES, {}),
+        request(client, hub.address, HubZwave.CMD_NETWORKINFORMATION),
+        request(client, client.placeDestination, Place.CMD_LISTDEVICES),
       ]);
 
       // Build node ID → device name map from Z-Wave devices
@@ -873,247 +911,151 @@ export function registerTools(
         }
       }
 
-      return { content: [{ type: "text", text: JSON.stringify(summarizeZwaveNetwork(resp.payload.attributes, nodeNames)) }] };
+      return textResult(JSON.stringify(summarizeZwaveNetwork(resp.payload.attributes, nodeNames)));
     }
   );
 
   // ── zwave_heal ────────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "zwave_heal",
     "Start a Z-Wave network heal. WARNING: interferes with normal Z-Wave operation during healing.",
     {
       block: z.boolean().default(false).describe("Block Z-Wave device control during heal (faster but disruptive)"),
     },
     async ({ block }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZwave.CMD_HEAL, { block });
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave network heal started." : JSON.stringify(resp.payload) }] };
+      const resp = await request(client, hub.address, HubZwave.CMD_HEAL, { block });
+      return emptyOk(resp, "Z-Wave network heal started.");
     }
   );
 
   // ── zwave_cancel_heal ─────────────────────────────────────────────────
-  server.tool(
+  tool(
     "zwave_cancel_heal",
     "Cancel any Z-Wave network heal in progress",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZwave.CMD_CANCELHEAL, {});
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? "Z-Wave heal cancelled." : JSON.stringify(resp.payload) }] };
+      const resp = await request(client, hub.address, HubZwave.CMD_CANCELHEAL);
+      return emptyOk(resp, "Z-Wave heal cancelled.");
     }
   );
 
   // ── zwave_remove_zombie ───────────────────────────────────────────────
-  server.tool(
+  tool(
     "zwave_remove_zombie",
     "Remove a zombie node from the Z-Wave network",
     {
       node: z.number().describe("Z-Wave node ID to remove (must be a zombie node)"),
     },
     async ({ node }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZwave.CMD_REMOVEZOMBIE, { node });
-      return { content: [{ type: "text", text: resp.payload.messageType === "EmptyMessage" ? `Zombie node ${node} removed.` : JSON.stringify(resp.payload) }] };
+      const resp = await request(client, hub.address, HubZwave.CMD_REMOVEZOMBIE, { node });
+      return emptyOk(resp, `Zombie node ${node} removed.`);
     }
   );
 
-  // ── zigbee_network_info ───────────────────────────────────────────────
-  server.tool(
-    "zigbee_network_info",
-    "Get Zigbee network information",
-    {},
-    async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+  // ── Zigbee and hub debug reads: hub address → one request → raw attributes
+  function hubRead(name: string, description: string, messageType: string): void {
+    tool(name, description, {}, async () => {
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_NETWORKINFORMATION, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    }
-  );
+      const resp = await request(client, hub.address, messageType);
+      return textResult(JSON.stringify(resp.payload.attributes));
+    });
+  }
 
-  // ── zigbee_get_stats ──────────────────────────────────────────────────
-  server.tool(
-    "zigbee_get_stats",
-    "Get Zigbee radio statistics",
-    {},
-    async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_GETSTATS, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    }
-  );
-
-  // ── zigbee_scan ───────────────────────────────────────────────────────
-  server.tool(
-    "zigbee_scan",
-    "Scan the Zigbee network for devices and channel information",
-    {},
-    async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubZigbee.CMD_SCAN, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    }
-  );
+  hubRead("zigbee_network_info", "Get Zigbee network information", HubZigbee.CMD_NETWORKINFORMATION);
+  hubRead("zigbee_get_stats", "Get Zigbee radio statistics", HubZigbee.CMD_GETSTATS);
+  hubRead("zigbee_scan", "Scan the Zigbee network for devices and channel information", HubZigbee.CMD_SCAN);
 
   // ── Admin-only tools (ARCUS_ENABLE_ADMIN=1) ────────────────────────
-  if (ADMIN_ENABLED) {
-    server.tool("hub_syslog", "Get hub system log", {}, async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETSYSLOG, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    });
+  if (process.env.ARCUS_ENABLE_ADMIN) {
+    hubRead("hub_syslog", "Get hub system log", HubDebug.CMD_GETSYSLOG);
+    hubRead("hub_bootlog", "Get hub boot log", HubDebug.CMD_GETBOOTLOG);
+    hubRead("hub_processes", "Get running processes on the hub", HubDebug.CMD_GETPROCESSES);
+    hubRead("hub_load", "Get system load on the hub", HubDebug.CMD_GETLOAD);
+    hubRead("hub_agent_db", "Get hub agent database", HubDebug.CMD_GETAGENTDB);
 
-    server.tool("hub_bootlog", "Get hub boot log", {}, async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETBOOTLOG, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    });
-
-    server.tool("hub_processes", "Get running processes on the hub", {}, async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETPROCESSES, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    });
-
-    server.tool("hub_load", "Get system load on the hub", {}, async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETLOAD, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    });
-
-    server.tool("hub_agent_db", "Get hub agent database", {}, async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
-      const hub = await getHubAddress(client);
-      if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETAGENTDB, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
-    });
-
-    server.tool("hub_files", "Get file listing from the hub", {
+    tool("hub_files", "Get file listing from the hub", {
       paths: z.array(z.string()).describe("List of file/directory paths to return"),
     }, async ({ paths }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const hub = await getHubAddress(client);
       if ("isError" in hub) return hub;
-      const resp = await client.sendRequest(hub.address, HubDebug.CMD_GETFILES, { paths });
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload.attributes) }] };
+      const resp = await request(client, hub.address, HubDebug.CMD_GETFILES, { paths });
+      return textResult(JSON.stringify(resp.payload.attributes));
     });
   }
 
   // ── list_subsystems ────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_subsystems",
     "List all subsystems at the active place",
     {},
     async () => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      await ensureConnected();
+      const notReady = await preflight(ctx);
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
-      const resp = await client.sendRequest("SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId });
-      return { content: [{ type: "text", text: JSON.stringify(summarizeSubsystems(resp.payload.attributes)) }] };
+      const resp = await request(client, "SERV:subs:", SubsystemService.CMD_LISTSUBSYSTEMS, { placeId });
+      return textResult(JSON.stringify(summarizeSubsystems(resp.payload.attributes)));
     }
   );
 
   // ── search_devices (pairing) ────────────────────────────────────────
-  server.tool(
+  tool(
     "search_devices",
     "Put the hub into pairing/search mode to find new or reconnecting devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
     {
       productId: z.string().optional().describe("Product catalog ID to search for (e.g. \"7b8fd3\"). Omit to search for all devices."),
     },
     async ({ productId }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
       const placeId = client.activePlaceId!;
       const dest = `SERV:subpairing:${placeId}`;
       const attrs: Record<string, unknown> = {};
       if (productId) attrs.productAddress = `SERV:product:${productId}`;
 
-      const startResp = await client.sendRequest(dest, PairingSubsystem.CMD_STARTPAIRING, attrs);
-      const searchResp = await client.sendRequest(dest, PairingSubsystem.CMD_SEARCH, {
+      await request(client, dest, PairingSubsystem.CMD_STARTPAIRING, attrs);
+      const searchResp = await request(client, dest, PairingSubsystem.CMD_SEARCH, {
         ...attrs,
         form: {},
       });
 
-      return {
-        content: [{
-          type: "text",
-          text: `Pairing mode active${productId ? ` (searching for product ${productId})` : ""}. Hub is now searching for devices.\n${JSON.stringify(searchResp.payload)}`,
-        }],
-      };
+      return textResult(
+        `Pairing mode active${productId ? ` (searching for product ${productId})` : ""}. Hub is now searching for devices.\n${JSON.stringify(searchResp.payload)}`
+      );
     }
   );
 
   // ── fire_scene ───────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "fire_scene",
     "Execute (fire) a scene",
     { sceneAddress: z.string().describe("Scene address (e.g. SERV:scene:abc-123)") },
     async ({ sceneAddress }) => {
-      const noPlace = requirePlace(client);
-      if (noPlace) return noPlace;
-      const blocked = requireWrite();
-      if (blocked) return blocked;
-      await ensureConnected();
-      const resp = await client.sendRequest(sceneAddress, Scene.CMD_FIRE, {});
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true });
+      if (notReady) return notReady;
+      const resp = await request(client, sceneAddress, Scene.CMD_FIRE);
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 
   // ── list_events ─────────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_events",
     "Drain buffered platform events (device state changes, alarm triggers, etc.) received since the last call. Returns and clears the buffer. Excludes noisy subcare/subsafety events — use list_care_status for those.",
     {},
@@ -1126,7 +1068,7 @@ export function registerTools(
         (e) => !CARE_PREFIXES.some((p) => e.messageType.startsWith(p))
       );
       if (filtered.length === 0) {
-        return { content: [{ type: "text", text: `No new events. (${events.length - filtered.length} care/safety events filtered)` }] };
+        return textResult(`No new events. (${events.length - filtered.length} care/safety events filtered)`);
       }
       // Group consecutive identical event types for conciseness
       const grouped: Array<{ type: string; source?: string; count: number; firstSeen: string; lastSeen: string; attributes: Record<string, unknown> }> = [];
@@ -1155,12 +1097,12 @@ export function registerTools(
       );
       const careCount = events.length - filtered.length;
       const header = careCount > 0 ? `${filtered.length} events (${careCount} care/safety events filtered):\n` : "";
-      return { content: [{ type: "text", text: header + JSON.stringify(summary) }] };
+      return textResult(header + JSON.stringify(summary));
     }
   );
 
   // ── list_care_status ──────────────────────────────────────────────────
-  server.tool(
+  tool(
     "list_care_status",
     "Get the latest care/safety subsystem status from buffered events. Shows triggered devices, inactive devices, and care behaviors without the noisy per-update spam.",
     {},
@@ -1173,7 +1115,7 @@ export function registerTools(
         (e) => CARE_PREFIXES.some((p) => e.messageType.startsWith(p))
       );
       if (careEvents.length === 0) {
-        return { content: [{ type: "text", text: "No care/safety events buffered." }] };
+        return textResult("No care/safety events buffered.");
       }
       // Deduplicate: keep only the latest event per messageType+source
       const latest = new Map<string, typeof careEvents[0]>();
@@ -1187,12 +1129,12 @@ export function registerTools(
         src: e.source,
         attrs: e.attributes,
       }));
-      return { content: [{ type: "text", text: `${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary)}` }] };
+      return textResult(`${careEvents.length} care/safety events buffered (showing ${latest.size} latest unique):\n${JSON.stringify(summary)}`);
     }
   );
 
   // ── send_message (escape hatch) ──────────────────────────────────────
-  server.tool(
+  tool(
     "send_message",
     "Send an arbitrary message to the Arcus platform (advanced/escape hatch)",
     {
@@ -1204,14 +1146,12 @@ export function registerTools(
         .describe("Message attributes"),
     },
     async ({ destination, messageType, attributes }) => {
-      const blocked = requireWrite();
+      const blocked = blockedMessage(messageType);
       if (blocked) return blocked;
-      await ensureConnected();
-      if (BLOCKED_MESSAGE_TYPES.has(messageType)) {
-        return { content: [{ type: "text", text: `Blocked: "${messageType}" is a destructive operation and is not allowed.` }], isError: true };
-      }
-      const resp = await client.sendRequest(destination, messageType, attributes);
-      return { content: [{ type: "text", text: JSON.stringify(resp.payload) }] };
+      const notReady = await preflight(ctx, { write: true, place: false });
+      if (notReady) return notReady;
+      const resp = await request(client, destination, messageType, attributes);
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 }
