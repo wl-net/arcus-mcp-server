@@ -31,6 +31,8 @@ export function registerRuleTools(server: McpServer, ctx: ToolContext): void {
   );
 
   // ── delete_rule ────────────────────────────────────────────────────
+  // rule:Delete is on BLOCKED_MESSAGE_TYPES, so send_message and device_command
+  // refuse it; this destructive-annotated tool is the only way to delete a rule.
   tool(
     "delete_rule",
     {

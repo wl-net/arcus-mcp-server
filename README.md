@@ -21,7 +21,8 @@ Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arc
 | `ARCUS_PASSWORD` | Yes* | Login password |
 | `ARCUS_API_KEY` | No | API key for direct API server connection (replaces username/password) |
 | `ARCUS_AUTH_TOKEN` | No | Skip login, use existing auth token directly |
-| `ARCUS_ENABLE_WRITE` | No | Set to `1` to enable device commands, alarm control, pairing, etc. |
+| `ARCUS_ENABLE_WRITE` | No | Set to `1` or `true` to enable device commands, alarm control, pairing, etc. Any other value, including `0`, leaves writes off |
+| `ARCUS_ENABLE_ADMIN` | No | Set to `1` or `true` to register the admin hub debug tools |
 | `ARCUS_DEBUG` | No | Set to `1` to log all WebSocket traffic to stderr |
 
 *Not required if `ARCUS_AUTH_TOKEN` is set.
@@ -157,7 +158,7 @@ claude mcp remove arcus
 ## Safety Guards
 
 ### Write Guard
-All mutating operations require `ARCUS_ENABLE_WRITE=1`. Without it, device commands, device identify, alarm control, scene firing, rule creation/deletion, hub reboot, Zigbee scans, and pairing are blocked.
+All mutating operations require `ARCUS_ENABLE_WRITE=1` (or `true`). Without it, device commands, device identify, alarm control, scene firing, rule creation/deletion, hub reboot, Zigbee scans, and pairing are blocked.
 
 ### Place Guard
 Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `device_command`, `list_history`, `list_persons`, `delete_rule`, `fire_scene`, `get_hub`, `reboot_hub`) check that a place is set before making any bridge requests. This prevents "Tsk Tsk, you are not authorized" errors that trigger security alerts on the backend.
@@ -167,7 +168,7 @@ Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `dev
 - Account/place/person deletion and removal
 - Hub deregistration and factory reset
 - Device removal (normal and forced)
-- Scene/rule deletion (via `send_message` — dedicated `delete_rule` tool exists)
+- Scene and rule deletion (rules can still be deleted with the dedicated `delete_rule` tool, which is annotated destructive)
 - Password/PIN changes
 
 ### Error Replies

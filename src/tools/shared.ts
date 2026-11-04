@@ -8,7 +8,9 @@ import {
   Account, Base, Device, Hub, HubAdvanced, Person, PersonService, Place, Rule, Scene,
 } from "../capabilities.js";
 
-// Destructive message types that should never be sent
+// Destructive message types that the generic paths (device_command and
+// send_message) refuse to send. rule:Delete has one sanctioned route, the
+// delete_rule tool, which is annotated destructive so clients confirm it first.
 export const BLOCKED_MESSAGE_TYPES = new Set([
   Account.CMD_DELETE,
   Hub.CMD_DELETE,
@@ -32,6 +34,15 @@ export const BLOCKED_MESSAGE_TYPES = new Set([
 // ── Guards and error handling ─────────────────────────────────────────
 
 export const WRITE_BLOCKED_MSG = "Write operations are disabled. Set ARCUS_ENABLE_WRITE=1 to enable device commands, alarm control, and other actions.";
+
+/**
+ * Read an on/off setting. Only "1" or "true" (any case) turn it on, so
+ * ARCUS_ENABLE_WRITE=0 or =false leaves writes off rather than enabling them.
+ */
+export function envFlag(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
 
 export type ToolError = CallToolResult & { isError: true };
 
@@ -110,7 +121,7 @@ export async function preflight(
   ctx: ToolContext,
   opts: { write?: boolean; place?: boolean } = {}
 ): Promise<ToolError | null> {
-  if (opts.write && !process.env.ARCUS_ENABLE_WRITE) return errorResult(WRITE_BLOCKED_MSG);
+  if (opts.write && !envFlag("ARCUS_ENABLE_WRITE")) return errorResult(WRITE_BLOCKED_MSG);
   await ctx.ensureConnected();
   if (opts.place !== false && !ctx.client.activePlaceId) {
     return errorResult("No active place set. Call set_active_place first.");
@@ -120,7 +131,8 @@ export async function preflight(
 
 export function blockedMessage(messageType: string): ToolError | null {
   if (!BLOCKED_MESSAGE_TYPES.has(messageType)) return null;
-  return errorResult(`Blocked: "${messageType}" is a destructive operation and is not allowed.`);
+  const hint = messageType === Rule.CMD_DELETE ? " Use the delete_rule tool instead." : "";
+  return errorResult(`Blocked: "${messageType}" is a destructive operation and is not allowed.${hint}`);
 }
 
 /** Run fn, turning anything it throws (synchronously or not) into { error } */

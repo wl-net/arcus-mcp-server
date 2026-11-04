@@ -37,6 +37,46 @@ describe("tool guards", () => {
     });
   });
 
+  it("treats ARCUS_ENABLE_WRITE=0, false and other values as off", async () => {
+    const harness = await startTools(new FakeBridgeClient());
+    h = harness;
+    for (const value of ["0", "false", "FALSE", "no", "off", "", " "]) {
+      await withEnv({ ARCUS_ENABLE_WRITE: value }, async () => {
+        const result = await harness.call("doorlock_buzz_in", { deviceAddress: "DRIV:dev:1" });
+        assert.equal(result.isError, true, JSON.stringify(value));
+        assert.equal(text(result), WRITE_BLOCKED_MSG);
+      });
+    }
+    assert.equal(harness.fake.requests.length, 0);
+  });
+
+  it("accepts 1 or true in any case for ARCUS_ENABLE_WRITE", async () => {
+    const harness = await startTools(new FakeBridgeClient());
+    h = harness;
+    for (const value of ["1", "true", "TRUE", " True "]) {
+      await withEnv({ ARCUS_ENABLE_WRITE: value }, async () => {
+        const result = await harness.call("disarm_alarm", {});
+        assert.equal(result.isError, undefined, `${JSON.stringify(value)}: ${text(result)}`);
+      });
+    }
+    assert.equal(harness.fake.sent("subalarm:Disarm").length, 4);
+  });
+
+  it("deletes rules only through delete_rule", async () => {
+    await withEnv({ ARCUS_ENABLE_WRITE: "1" }, async () => {
+      const fake = new FakeBridgeClient();
+      h = await startTools(fake);
+      const viaSend = await h.call("send_message", { destination: "SERV:rule:place-1.1", messageType: "rule:Delete" });
+      assert.equal(viaSend.isError, true);
+      assert.match(text(viaSend), /Use the delete_rule tool instead/);
+      assert.equal(fake.sent("rule:Delete").length, 0);
+
+      const viaTool = await h.call("delete_rule", { ruleAddress: "SERV:rule:place-1.1" });
+      assert.equal(viaTool.isError, undefined, text(viaTool));
+      assert.equal(fake.sent("rule:Delete").length, 1);
+    });
+  });
+
   it("never sends blocked message types, even with writes enabled", async () => {
     await withEnv({ ARCUS_ENABLE_WRITE: "1" }, async () => {
       h = await startTools(new FakeBridgeClient());
@@ -115,12 +155,14 @@ describe("tool guards", () => {
 
   it("registers admin tools only with ARCUS_ENABLE_ADMIN", async () => {
     const adminTools = ["hub_syslog", "hub_bootlog", "hub_processes", "hub_load", "hub_agent_db", "hub_files"];
-    await withEnv({ ARCUS_ENABLE_ADMIN: undefined }, async () => {
-      h = await startTools(new FakeBridgeClient());
-      const names = (await h.mcp.listTools()).tools.map((t) => t.name);
-      for (const name of adminTools) assert.ok(!names.includes(name), name);
-      await h.close();
-    });
+    for (const value of [undefined, "0", "false"]) {
+      await withEnv({ ARCUS_ENABLE_ADMIN: value }, async () => {
+        h = await startTools(new FakeBridgeClient());
+        const names = (await h.mcp.listTools()).tools.map((t) => t.name);
+        for (const name of adminTools) assert.ok(!names.includes(name), `${name} with ${JSON.stringify(value)}`);
+        await h.close();
+      });
+    }
     await withEnv({ ARCUS_ENABLE_ADMIN: "1" }, async () => {
       h = await startTools(new FakeBridgeClient());
       const names = (await h.mcp.listTools()).tools.map((t) => t.name);

@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { Device, DeviceAdvanced, HubAdvanced, HubDebug, HubZigbee, HubZwave, Place } from "../capabilities.js";
-import { textResult, request, preflight, getHubAddress, READ_ONLY, writes, emptyOk, toolRegistrar, type ToolContext } from "./shared.js";
+import { textResult, request, preflight, envFlag, getHubAddress, READ_ONLY, writes, emptyOk, toolRegistrar, type ToolContext } from "./shared.js";
 import { summarizeHub, zwaveNodeId, summarizeZwaveNetwork } from "./summarize.js";
 
 export function registerHubTools(server: McpServer, ctx: ToolContext): void {
@@ -177,7 +177,7 @@ export function registerHubTools(server: McpServer, ctx: ToolContext): void {
   );
 
   // ── Admin-only tools (ARCUS_ENABLE_ADMIN=1) ────────────────────────
-  if (process.env.ARCUS_ENABLE_ADMIN) {
+  if (envFlag("ARCUS_ENABLE_ADMIN")) {
     hubRead("hub_syslog", "Hub syslog", "Get hub system log", HubDebug.CMD_GETSYSLOG);
     hubRead("hub_bootlog", "Hub boot log", "Get hub boot log", HubDebug.CMD_GETBOOTLOG);
     hubRead("hub_processes", "Hub processes", "Get running processes on the hub", HubDebug.CMD_GETPROCESSES);
