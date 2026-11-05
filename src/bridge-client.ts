@@ -203,10 +203,17 @@ export class BridgeClient {
 
   async fetchProductCatalog(): Promise<void> {
     if (this._productCatalog) return;
-    const resp = throwIfErrorResponse(
-      await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETPRODUCTS, {}),
-      ProductCatalog.CMD_GETPRODUCTS,
-    );
+    // GetProducts returns only browsable products, which leaves out devices such as
+    // the Dome valve and Springs MCZ1 remote. GetAllProducts includes those; fall back
+    // to GetProducts if the platform refuses it.
+    let resp = await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETALLPRODUCTS, {});
+    if (resp.payload?.messageType === "Error") {
+      dbg(`${ProductCatalog.CMD_GETALLPRODUCTS} failed (${JSON.stringify(resp.payload.attributes)}), using ${ProductCatalog.CMD_GETPRODUCTS}`);
+      resp = throwIfErrorResponse(
+        await this.sendRequest("SERV:prodcat:", ProductCatalog.CMD_GETPRODUCTS, {}),
+        ProductCatalog.CMD_GETPRODUCTS,
+      );
+    }
     const products = resp.payload.attributes.products as Array<Record<string, unknown>> | undefined;
     const catalog = new Map<string, { batterySize: string; batteryNum: number }>();
     if (products) {

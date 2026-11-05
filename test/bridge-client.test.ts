@@ -49,6 +49,47 @@ describe("BridgeClient", () => {
     });
   });
 
+  describe("product catalog", () => {
+    const remote = { "product:id": "aa159b", "product:batteryPrimSize": "AAA", "product:batteryPrimNum": 2 };
+    const sensor = { "product:id": "7b8fd3", "product:batteryPrimSize": "CR2", "product:batteryPrimNum": 1 };
+
+    it("loads non-browsable products with GetAllProducts", async () => {
+      const { server, client, url } = await start((req) => {
+        if (req.messageType === "prodcat:GetAllProducts") return { messageType: "prodcat:GetAllProductsResponse", attributes: { products: [remote, sensor] } };
+        if (req.messageType === "prodcat:GetProducts") return { messageType: "prodcat:GetProductsResponse", attributes: { products: [sensor] } };
+        return undefined;
+      });
+      await client.connect(url, "token-0");
+
+      await client.fetchProductCatalog();
+      assert.deepEqual(client.productCatalog?.get("aa159b"), { batterySize: "AAA", batteryNum: 2 });
+      assert.equal(server.requestsOf("prodcat:GetAllProducts")[0]?.destination, "SERV:prodcat:");
+      assert.equal(server.requestsOf("prodcat:GetProducts").length, 0);
+    });
+
+    it("falls back to GetProducts when GetAllProducts returns Error", async () => {
+      const { server, client, url } = await start((req) => {
+        if (req.messageType === "prodcat:GetAllProducts") return { messageType: "Error", attributes: { code: "UnsupportedMessageType" } };
+        if (req.messageType === "prodcat:GetProducts") return { messageType: "prodcat:GetProductsResponse", attributes: { products: [sensor] } };
+        return undefined;
+      });
+      await client.connect(url, "token-0");
+
+      await client.fetchProductCatalog();
+      assert.deepEqual(client.productCatalog?.get("7b8fd3"), { batterySize: "CR2", batteryNum: 1 });
+      assert.equal(client.productCatalog?.has("aa159b"), false);
+      assert.equal(server.requestsOf("prodcat:GetProducts").length, 1);
+    });
+
+    it("throws when both requests return Error", async () => {
+      const { client, url } = await start((req) => (req.messageType.startsWith("prodcat:") ? unauthorized : undefined));
+      await client.connect(url, "token-0");
+
+      await assert.rejects(client.fetchProductCatalog(), /prodcat:GetProducts failed: .*UnauthorizedRequest/);
+      assert.equal(client.productCatalog, null);
+    });
+  });
+
   describe("reconnect", () => {
     it("re-sends SetActivePlace after a drop and reports connected", async () => {
       const { server, client, url } = await start();

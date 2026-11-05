@@ -316,9 +316,9 @@ Commands marked with **[MCP]** have a dedicated MCP tool implemented in this ser
 
 | Command | Description |
 |---------|-------------|
-| `prodcat:GetProducts` | Get all products |
-| `prodcat:GetProduct` | Get a single product |
-| `prodcat:GetAllProducts` | Get all products (unfiltered) |
+| `prodcat:GetProducts` | Get browsable products only (`canbrowse="true"`) |
+| `prodcat:GetProduct` | Get a single product by ID, browsable or not |
+| `prodcat:GetAllProducts` | Get all products, including non-browsable ones |
 | `prodcat:GetCategories` | Get product categories |
 | `prodcat:GetBrands` | Get product brands |
 | `prodcat:FindProducts` | Search products |
