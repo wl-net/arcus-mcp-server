@@ -3,7 +3,7 @@
 import type { z, ZodRawShape, ZodTypeAny } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import type { BridgeClient, BridgeMessage } from "../bridge-client.js";
+import { describeErrorResponse, isErrorResponse, type BridgeClient, type BridgeMessage } from "../bridge-client.js";
 import {
   Account, Base, Device, Hub, HubAdvanced, Person, PersonService, Place, Rule, Scene,
 } from "../capabilities.js";
@@ -64,18 +64,7 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** True if Arcus answered the request with an Error message */
-export function isErrorResponse(resp: BridgeMessage): boolean {
-  return resp.payload?.messageType === "Error";
-}
-
-/** Readable description of an Error reply, e.g. "doorlock:BuzzIn failed: Lock is jammed (code: lock.jammed)" */
-export function describeErrorResponse(resp: BridgeMessage, request: string): string {
-  const attrs = resp.payload.attributes ?? {};
-  const { code, message } = attrs;
-  if (code == null && message == null) return `${request} failed: ${JSON.stringify(attrs)}`;
-  return `${request} failed: ${message ?? "(no message)"}${code != null ? ` (code: ${code})` : ""}`;
-}
+export { describeErrorResponse, isErrorResponse };
 
 /**
  * sendRequest resolves (rather than rejects) when Arcus replies with an Error
@@ -124,7 +113,8 @@ export async function preflight(
   if (opts.write && !envFlag("ARCUS_ENABLE_WRITE")) return errorResult(WRITE_BLOCKED_MSG);
   await ctx.ensureConnected();
   if (opts.place !== false && !ctx.client.activePlaceId) {
-    return errorResult("No active place set. Call set_active_place first.");
+    const problem = ctx.client.placeProblem;
+    return errorResult(`No active place set${problem ? ` (${problem})` : ""}. Call set_active_place first.`);
   }
   return null;
 }

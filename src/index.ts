@@ -19,6 +19,7 @@ const API_KEY = process.env.ARCUS_API_KEY;
 const AUTH_TOKEN = API_KEY ? undefined : process.env.ARCUS_AUTH_TOKEN;
 const USERNAME = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_USERNAME");
 const PASSWORD = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
+const PLACE_ID = process.env.ARCUS_PLACE_ID?.trim() || undefined;
 
 const FEATURES = parseFeatures(process.env.FEATURES);
 
@@ -31,6 +32,7 @@ export const ensureConnected = createEnsureConnected(bridgeClient, {
   authToken: AUTH_TOKEN,
   username: USERNAME,
   password: PASSWORD,
+  placeId: PLACE_ID,
 });
 
 const mcpServer = new McpServer({

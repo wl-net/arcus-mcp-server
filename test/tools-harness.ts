@@ -27,6 +27,7 @@ export function errorReply(code: string, message: string) {
 export class FakeBridgeClient {
   session: { personId: string; places: unknown[] } | null = { personId: "person-1", places: [] };
   activePlaceId: string | null = "place-1";
+  placeProblem: string | null = null;
   productCatalog = new Map<string, { batterySize: string; batteryNum: number }>();
   requests: SentRequest[] = [];
   events: BridgeEvent[] = [];

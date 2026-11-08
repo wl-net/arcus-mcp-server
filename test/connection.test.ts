@@ -2,7 +2,7 @@ import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { BridgeClient } from "../src/bridge-client.js";
 import { createEnsureConnected, type ConnectionConfig } from "../src/connection.js";
-import { FakeBridgeServer, quietStderr, until } from "./helpers/ws-server.js";
+import { FakeBridgeServer, quietStderr, until, type BridgeRequest, type Reply } from "./helpers/ws-server.js";
 
 describe("ensureConnected", () => {
   let server: FakeBridgeServer | undefined;
@@ -14,8 +14,12 @@ describe("ensureConnected", () => {
     server = client = undefined;
   });
 
-  async function start(config: Omit<ConnectionConfig, "bridgeUrl">, reconnectDelays = [20, 40]) {
-    server = new FakeBridgeServer();
+  async function start(
+    config: Omit<ConnectionConfig, "bridgeUrl">,
+    reconnectDelays = [20, 40],
+    respond?: (req: BridgeRequest) => Reply | undefined | null
+  ) {
+    server = new FakeBridgeServer(respond);
     const url = await server.start();
     client = new BridgeClient({ reconnectDelays });
     const ensureConnected = createEnsureConnected(client, { bridgeUrl: url, timeoutMs: 2000, ...config });
@@ -82,6 +86,137 @@ describe("ensureConnected", () => {
     assert.equal(server.handshakes.length, 2);
     assert.ok(server.handshakes.every((h) => h.path === "/apibus" && h.authorization === "Bearer api-key"));
     assert.equal(client.placeDestination, "SERV:place:place-1");
+  });
+
+  describe("ARCUS_PLACE_ID", () => {
+    const refuseSetActivePlace = (req: BridgeRequest): Reply | undefined =>
+      req.messageType === "sess:SetActivePlace" ? { messageType: "Error", attributes: { code: "UnauthorizedRequest" } } : undefined;
+
+    it("selects no place when unset", async () => {
+      const { server, client, ensureConnected } = await start({ authToken: "token-0" });
+      await ensureConnected();
+      assert.equal(client.activePlaceId, null);
+      assert.equal(server.requestsOf("sess:SetActivePlace").length, 0);
+    });
+
+    it("makes the place active before resolving, and restores it after a reconnect", async () => {
+      const { server, client, ensureConnected } = await start({ authToken: "token-0", placeId: "place-2" }, [50]);
+      await ensureConnected();
+      assert.equal(client.activePlaceId, "place-2");
+      assert.deepEqual(server.requestsOf("sess:SetActivePlace").map((r) => r.attributes), [{ placeId: "place-2" }]);
+
+      server.dropConnection();
+      await until(() => client.reconnecting, 2000, "reconnect scheduled");
+      await ensureConnected();
+      assert.deepEqual(server.requestsOf("sess:SetActivePlace").map((r) => r.attributes.placeId), ["place-2", "place-2"]);
+      assert.equal(client.activePlaceId, "place-2");
+    });
+
+    it("stays connected without a place when refused, and says why", async () => {
+      const { server, client, ensureConnected } = await start({ username: "user", password: "pass", placeId: "nope" }, [20], refuseSetActivePlace);
+      await ensureConnected();
+      assert.equal(client.connected, true);
+      assert.equal(client.activePlaceId, null);
+      assert.match(client.placeProblem ?? "", /Arcus refused ARCUS_PLACE_ID nope: sess:SetActivePlace failed: .*UnauthorizedRequest/);
+
+      // No login and reconnect on every later call
+      await ensureConnected();
+      assert.equal(server.logins, 1);
+      assert.equal(server.connections, 1);
+    });
+
+    it("overrides the first place in API-key mode, if it's one of the key's places", async () => {
+      server = new FakeBridgeServer();
+      server.places.push({ placeId: "place-2", placeName: "Barn", accountId: "acct-1", role: "OWNER" });
+      const url = await server.start();
+      client = new BridgeClient({ reconnectDelays: [20] });
+      await createEnsureConnected(client, { bridgeUrl: url, apiKey: "api-key", placeId: "place-2" })();
+      assert.equal(client.activePlaceId, "place-2");
+    });
+
+    it("refuses a place that isn't one of the API key's places", async () => {
+      const { client, ensureConnected } = await start({ apiKey: "api-key", placeId: "typo" });
+      await ensureConnected();
+      assert.equal(client.activePlaceId, null);
+      assert.match(client.placeProblem ?? "", /ARCUS_PLACE_ID typo: not one of this API key's places/);
+    });
+  });
+
+  describe("fresh connect after a reconnect gave up", () => {
+    /** Connect, choose place-2 as set_active_place does, then lose the session for good */
+    async function giveUpWithPlace(config: Omit<ConnectionConfig, "bridgeUrl">, respond?: (req: BridgeRequest) => Reply | undefined | null) {
+      const started = await start(config, [20], respond);
+      const { server, client, ensureConnected } = started;
+      await ensureConnected();
+      if (config.apiKey) {
+        client.setActivePlace("place-2");
+      } else {
+        await client.sendRequest("SERV:sess:", "sess:SetActivePlace", { placeId: "place-2" });
+        client.setActivePlace("place-2");
+      }
+
+      const token = config.apiKey ?? "token-0";
+      server.validTokens.delete(token);
+      server.dropConnection();
+      await until(() => client.reconnecting, 2000, "reconnect scheduled");
+      await assert.rejects(ensureConnected(), /was rejected/);
+      server.validTokens.add(token);
+      return started;
+    }
+
+    it("selects the active place again on the new session", async () => {
+      const { server, client, ensureConnected } = await giveUpWithPlace({ authToken: "token-0" });
+      await ensureConnected();
+      const last = server.requestsOf("sess:SetActivePlace").at(-1)!;
+      assert.equal(last.connection, server.connections);
+      assert.equal(last.attributes.placeId, "place-2");
+      assert.equal(client.activePlaceId, "place-2");
+    });
+
+    it("keeps the place chosen with set_active_place over ARCUS_PLACE_ID", async () => {
+      const { server, client, ensureConnected } = await giveUpWithPlace({ authToken: "token-0", placeId: "place-1" });
+      await ensureConnected();
+      assert.equal(server.requestsOf("sess:SetActivePlace").at(-1)!.attributes.placeId, "place-2");
+      assert.equal(client.activePlaceId, "place-2");
+    });
+
+    it("keeps the chosen place in API-key mode too", async () => {
+      const { client, ensureConnected } = await giveUpWithPlace({ apiKey: "api-key", placeId: "place-1" });
+      server!.places.push({ placeId: "place-2", placeName: "Barn", accountId: "acct-1", role: "OWNER" });
+      await ensureConnected();
+      assert.equal(client.activePlaceId, "place-2");
+    });
+
+    it("keeps the place and retries on the next call when Arcus refuses it", async () => {
+      let refuse = false;
+      const { server, client, ensureConnected } = await giveUpWithPlace({ authToken: "token-0", placeId: "place-1" }, (req) =>
+        refuse && req.messageType === "sess:SetActivePlace" ? { messageType: "Error", attributes: { code: "UnauthorizedRequest" } } : undefined
+      );
+      refuse = true;
+      await assert.rejects(ensureConnected(), /Could not select the active place place-2 again: .*UnauthorizedRequest/);
+      assert.equal(client.activePlaceId, "place-2");
+      assert.equal(client.connected, false);
+
+      refuse = false;
+      await ensureConnected();
+      assert.equal(client.activePlaceId, "place-2");
+      assert.equal(server.requestsOf("sess:SetActivePlace").at(-1)!.connection, server.connections);
+    });
+
+    it("keeps the place, not ARCUS_PLACE_ID, after a timeout selecting it", async () => {
+      let silent = false;
+      const { server, client, ensureConnected } = await giveUpWithPlace({ authToken: "token-0", placeId: "place-1", timeoutMs: 200 }, (req) =>
+        silent && req.messageType === "sess:SetActivePlace" ? null : undefined
+      );
+      silent = true;
+      await assert.rejects(ensureConnected(), /Timed out/);
+      assert.equal(client.activePlaceId, "place-2");
+
+      silent = false;
+      await ensureConnected();
+      assert.equal(client.activePlaceId, "place-2");
+      assert.equal(server.requestsOf("sess:SetActivePlace").at(-1)!.attributes.placeId, "place-2");
+    });
   });
 
   describe("expired token", () => {

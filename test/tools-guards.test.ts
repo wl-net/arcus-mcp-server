@@ -144,6 +144,16 @@ describe("tool guards", () => {
     assert.equal(h.connectCalls, 1);
   });
 
+  it("says why there is no active place when Arcus refused ARCUS_PLACE_ID", async () => {
+    const fake = new FakeBridgeClient();
+    fake.activePlaceId = null;
+    fake.placeProblem = "Arcus refused ARCUS_PLACE_ID nope: sess:SetActivePlace failed: (no message) (code: UnauthorizedRequest)";
+    h = await startTools(fake);
+    const result = await h.call("list_devices");
+    assert.equal(result.isError, true);
+    assert.equal(text(result), `No active place set (${fake.placeProblem}). Call set_active_place first.`);
+  });
+
   it("reports a failed connect as an error result", async () => {
     h = await startTools(new FakeBridgeClient(), async () => {
       throw new Error("Login failed with status 401");

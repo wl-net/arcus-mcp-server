@@ -1,4 +1,5 @@
-import { HandshakeError, type BridgeClient, type SessionInfo } from "./bridge-client.js";
+import { HandshakeError, describeErrorResponse, isErrorResponse, type BridgeClient, type SessionInfo } from "./bridge-client.js";
+import { SessionService } from "./capabilities.js";
 
 export interface ConnectionConfig {
   bridgeUrl: string;
@@ -9,6 +10,8 @@ export interface ConnectionConfig {
   /** Client bridge mode, logging in for an irisAuthToken */
   username?: string;
   password?: string;
+  /** Place to make active on connect (ARCUS_PLACE_ID). Without it, none until set_active_place */
+  placeId?: string;
   /** How long a connect, or a wait for an automatic reconnect, may take before failing */
   timeoutMs?: number;
 }
@@ -21,7 +24,10 @@ type Bridge = Pick<
   | "login"
   | "connect"
   | "connectApiServer"
+  | "activePlaceId"
   | "setActivePlace"
+  | "clearActivePlace"
+  | "sendRequest"
   | "waitForConnection"
   | "disconnect"
 >;
@@ -77,12 +83,47 @@ export function createEnsureConnected(bridge: Bridge, config: ConnectionConfig):
 
     log(`Connected — personId=${session.personId}, ${session.places.length} place(s)`);
 
-    // Auto-set place in API server mode. The bridge client keeps it across reconnects.
-    if (bridge.autoPlace && session.places.length > 0) {
-      const place = session.places[0];
-      bridge.setActivePlace(place.placeId);
-      log(`Auto-selected place: ${place.placeName} (${place.placeId})`);
+    await choosePlace(session);
+  }
+
+  /**
+   * Make a place active on a new session: the place that was active before, if the
+   * bridge client gave up reconnecting (Arcus doesn't carry it over); otherwise
+   * ARCUS_PLACE_ID; otherwise, in API-key mode, the key's first place.
+   */
+  async function choosePlace(session: SessionInfo): Promise<void> {
+    const previous = bridge.activePlaceId;
+    const placeId = previous ?? config.placeId ?? (bridge.autoPlace ? session.places[0]?.placeId : undefined);
+    if (!placeId) return;
+    const what = previous ? `the active place ${placeId}` : placeId === config.placeId ? `ARCUS_PLACE_ID ${placeId}` : `place ${placeId}`;
+
+    // Set it before asking, so if the socket drops first the bridge client's reconnect restores it
+    bridge.setActivePlace(placeId);
+
+    let refusal: string | null = null;
+    if (bridge.autoPlace) {
+      // The API server makes the key's place active itself
+      if (!session.places.some((p) => p.placeId === placeId)) refusal = "not one of this API key's places";
+    } else {
+      // A timeout or dropped socket rejects here and fails the connect, keeping the place
+      const resp = await bridge.sendRequest("SERV:sess:", SessionService.CMD_SETACTIVEPLACE, { placeId });
+      if (isErrorResponse(resp)) refusal = describeErrorResponse(resp, SessionService.CMD_SETACTIVEPLACE);
     }
+    if (!refusal) {
+      log(`Selected ${what}`);
+      return;
+    }
+
+    if (previous && !bridge.autoPlace) {
+      // Arcus accepted this place before, so retry it as the bridge client's reconnect
+      // does: drop the session and keep the place for the next call
+      bridge.disconnect();
+      throw new Error(`Could not select ${what} again: ${refusal}`);
+    }
+    // A place Arcus has never accepted is most likely misconfigured. Stay connected so
+    // list_places and set_active_place work, and tools that need a place say why
+    bridge.clearActivePlace(`Arcus refused ${what}: ${refusal}`);
+    log(`Arcus refused ${what}: ${refusal}`);
   }
 
   function connectWithTimeout(): Promise<void> {

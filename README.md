@@ -21,6 +21,7 @@ Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arc
 | `ARCUS_PASSWORD` | Yes* | Login password |
 | `ARCUS_API_KEY` | No | API key for direct API server connection (replaces username/password) |
 | `ARCUS_AUTH_TOKEN` | No | Skip login, use existing auth token directly |
+| `ARCUS_PLACE_ID` | No | Place to make active when connecting, so tools work without calling `set_active_place` first. `list_places` shows the IDs. If Arcus refuses it, the server stays connected without a place: tools that need one say why, and `list_places` and `set_active_place` still work |
 | `ARCUS_ENABLE_WRITE` | No | Set to `1` or `true` to enable device commands, alarm control, pairing, etc. Any other value, including `0`, leaves writes off |
 | `ARCUS_ENABLE_ADMIN` | No | Set to `1` or `true` to register the admin hub debug tools |
 | `FEATURES` | No | [Optional features](#optional-features) to turn on, comma-separated, e.g. `personal_info` |

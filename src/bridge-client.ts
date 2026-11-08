@@ -76,10 +76,21 @@ export class HandshakeError extends Error {
 
 /** Throw if a response is an Error reply, which sendRequest resolves rather than rejects */
 export function throwIfErrorResponse(resp: BridgeMessage, request: string): BridgeMessage {
-  if (resp.payload?.messageType === "Error") {
-    throw new Error(`${request} failed: ${JSON.stringify(resp.payload.attributes)}`);
-  }
+  if (isErrorResponse(resp)) throw new Error(describeErrorResponse(resp, request));
   return resp;
+}
+
+/** True if Arcus answered the request with an Error message */
+export function isErrorResponse(resp: BridgeMessage): boolean {
+  return resp.payload?.messageType === "Error";
+}
+
+/** Readable description of an Error reply, e.g. "doorlock:BuzzIn failed: Lock is jammed (code: lock.jammed)" */
+export function describeErrorResponse(resp: BridgeMessage, request: string): string {
+  const attrs = resp.payload.attributes ?? {};
+  const { code, message } = attrs;
+  if (code == null && message == null) return `${request} failed: ${JSON.stringify(attrs)}`;
+  return `${request} failed: ${message ?? "(no message)"}${code != null ? ` (code: ${code})` : ""}`;
 }
 
 const debug = !!process.env.ARCUS_DEBUG;
@@ -96,6 +107,7 @@ export class BridgeClient {
   private pending = new Map<string, PendingRequest>();
   private _session: SessionInfo | null = null;
   private _activePlaceId: string | null = null;
+  private _placeProblem: string | null = null;
   private _events: BridgeEvent[] = [];
   private _productCatalog: Map<string, { batterySize: string; batteryNum: number }> | null = null;
 
@@ -203,8 +215,20 @@ export class BridgeClient {
     return this._productCatalog;
   }
 
+  /** Why there is no active place, when Arcus refused the configured one (ARCUS_PLACE_ID) */
+  get placeProblem(): string | null {
+    return this._placeProblem;
+  }
+
+  /** Forget the active place, recording why for tools that need one */
+  clearActivePlace(problem: string): void {
+    this._activePlaceId = null;
+    this._placeProblem = problem;
+  }
+
   setActivePlace(placeId: string): void {
     this._activePlaceId = placeId;
+    this._placeProblem = null;
   }
 
   async fetchProductCatalog(): Promise<void> {
