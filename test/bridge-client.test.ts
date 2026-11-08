@@ -16,10 +16,10 @@ describe("BridgeClient", () => {
     server = client = undefined;
   });
 
-  async function start(respond?: (req: BridgeRequest) => Reply | undefined | null) {
+  async function start(respond?: (req: BridgeRequest) => Reply | undefined | null, personalInfo = false) {
     server = new FakeBridgeServer(respond);
     const url = await server.start();
-    client = new BridgeClient({ reconnectDelays: [20, 40] });
+    client = new BridgeClient({ reconnectDelays: [20, 40], personalInfo });
     return { server, client, url };
   }
 
@@ -46,6 +46,43 @@ describe("BridgeClient", () => {
       assert.equal(change.source, "DRIV:dev:d1");
       assert.deepEqual(change.attributes, { "swit:state": "ON" });
       assert.equal(added.source, "SERV:place:place-1", "falls back to the destination without a source");
+    });
+  });
+
+  describe("personal info", () => {
+    const person = { "person:firstName": "Ada", "person:email": "ada@example.com", "person:mobileNumber": "555-0100" };
+    const places = [{ placeId: "place-1", name: "Home", streetAddress1: "1 Main St", city: "Springfield", state: "IL" }];
+    const respond = (req: BridgeRequest): Reply | undefined =>
+      req.messageType === "person:ListAvailablePlaces"
+        ? { messageType: "person:ListAvailablePlacesResponse", attributes: { places } }
+        : { messageType: "base:GetAttributesResponse", attributes: person };
+
+    it("is dropped from replies and events by default", async () => {
+      const { server, client, url } = await start(respond);
+      await client.connect(url, "token-0");
+
+      const attrs = await client.sendRequest("SERV:person:p1", "base:GetAttributes");
+      assert.deepEqual(attrs.payload.attributes, { "person:firstName": "Ada" });
+      const list = await client.sendRequest("SERV:person:p1", "person:ListAvailablePlaces");
+      assert.deepEqual(list.payload.attributes, { places: [{ placeId: "place-1", name: "Home" }] });
+
+      server.send({ source: "SERV:person:p1" }, "base:ValueChange", { "person:mobileNumber": "555-0199" });
+      await until(() => client.peekEvents().length === 1, 2000, "event");
+      assert.deepEqual(client.drainEvents()[0].attributes, {});
+    });
+
+    it("is kept with personalInfo", async () => {
+      const { server, client, url } = await start(respond, true);
+      await client.connect(url, "token-0");
+
+      const attrs = await client.sendRequest("SERV:person:p1", "base:GetAttributes");
+      assert.deepEqual(attrs.payload.attributes, person);
+      const list = await client.sendRequest("SERV:person:p1", "person:ListAvailablePlaces");
+      assert.deepEqual(list.payload.attributes, { places });
+
+      server.send({ source: "SERV:person:p1" }, "base:ValueChange", { "person:mobileNumber": "555-0199" });
+      await until(() => client.peekEvents().length === 1, 2000, "event");
+      assert.deepEqual(client.drainEvents()[0].attributes, { "person:mobileNumber": "555-0199" });
     });
   });
 

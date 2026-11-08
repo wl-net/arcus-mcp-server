@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { Product, ProductCatalog, SessionService } from "./capabilities.js";
+import { redactPersonal } from "./redact.js";
 
 export interface BridgeEvent {
   timestamp: number;
@@ -57,6 +58,8 @@ const RECONNECT_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
 export interface BridgeClientOptions {
   /** Backoff between automatic reconnect attempts; the last delay repeats */
   reconnectDelays?: number[];
+  /** Keep contact details, addresses and locations in replies and events (FEATURES=personal_info) */
+  personalInfo?: boolean;
 }
 
 /** The server refused the WebSocket upgrade with an HTTP error (e.g. 401 for a bad token) */
@@ -113,8 +116,11 @@ export class BridgeClient {
   private _credentials: { baseUrl: string; username: string; password: string } | null = null;
   private _needsLogin = false;
 
+  private readonly _personalInfo: boolean;
+
   constructor(options: BridgeClientOptions = {}) {
     this._reconnectDelays = options.reconnectDelays ?? RECONNECT_DELAYS;
+    this._personalInfo = options.personalInfo ?? false;
   }
 
   /** Optional callback fired for every unsolicited (non-response) message */
@@ -361,6 +367,8 @@ export class BridgeClient {
           dbg("Failed to parse message as JSON");
           return;
         }
+        // Every reply and event passes here, so this is the one place to drop personal details
+        if (!this._personalInfo) msg.payload = redactPersonal(msg.payload);
 
         // Handle SessionCreated (initial welcome)
         if (msg.payload?.messageType === "SessionCreated" && !settled) {

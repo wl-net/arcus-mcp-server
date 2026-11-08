@@ -1,57 +1,11 @@
 // Compact summaries of Arcus responses, and Z-Wave address decoding
 
 import {
-  Account, AlarmIncident, Base, Contact, Device, DeviceAdvanced, DeviceConnection, DevicePower,
+  AlarmIncident, Base, Contact, Device, DeviceAdvanced, DeviceConnection, DevicePower,
   Dimmer, DoorLock, Glass, Hub, HubAdvanced, HubAlarm, HubConnection, HubPower,
-  HubZigbee, HubZwave, MobileDevice, Motion, Person, Place, Presence, RelativeHumidity, Rule, Scene,
+  HubZigbee, HubZwave, Motion, Person, Presence, RelativeHumidity, Rule, Scene,
   Subsystem, Switch, Temperature, Thermostat,
 } from "../capabilities.js";
-import { Features, hasFeature } from "./shared.js";
-
-// ── Personal details ───────────────────────────────────────────────────
-// No tool needs contact details, street addresses or locations to do its job,
-// so they stay out of results unless FEATURES includes personal_info.
-
-function personalInfoEnabled(): boolean {
-  return hasFeature(Features.PERSONAL_INFO);
-}
-
-const PERSONAL_ATTRS = new Set<string>([
-  Person.ATTR_EMAIL, Person.ATTR_MOBILENUMBER, Person.ATTR_MOBILENOTIFICATIONENDPOINTS, Person.ATTR_CURRLOCATION,
-  Place.ATTR_STREETADDRESS1, Place.ATTR_STREETADDRESS2, Place.ATTR_CITY, Place.ATTR_STATEPROV,
-  Place.ATTR_ZIPCODE, Place.ATTR_ZIPPLUS4, Place.ATTR_ADDRLATITUDE, Place.ATTR_ADDRLONGITUDE,
-  Place.ATTR_ADDRCOUNTY, Place.ATTR_ADDRCOUNTYFIPS,
-  MobileDevice.ATTR_PHONENUMBER, MobileDevice.ATTR_LASTLATITUDE, MobileDevice.ATTR_LASTLONGITUDE,
-  Account.ATTR_BILLINGFIRSTNAME, Account.ATTR_BILLINGLASTNAME, Account.ATTR_BILLINGCCLAST4,
-  Account.ATTR_BILLINGSTREET1, Account.ATTR_BILLINGSTREET2, Account.ATTR_BILLINGCITY,
-  Account.ATTR_BILLINGSTATE, Account.ATTR_BILLINGZIP, Account.ATTR_BILLINGZIPPLUSFOUR,
-]);
-
-/** Remove personal attributes, at any depth, from a raw platform payload */
-export function redactPersonal<T>(value: T): T {
-  if (personalInfoEnabled()) return value;
-  return strip(value) as T;
-}
-
-function strip(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(strip);
-  if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value).filter(([k]) => !PERSONAL_ATTRS.has(k)).map(([k, v]) => [k, strip(v)])
-  );
-}
-
-/** A person's email and mobile number, or nothing unless personal info is enabled */
-export function contactDetails(attrs: Record<string, unknown>): Record<string, unknown> {
-  if (!personalInfoEnabled()) return {};
-  return { email: attrs[Person.ATTR_EMAIL], mobile: attrs[Person.ATTR_MOBILENUMBER] };
-}
-
-/** Places from person:ListAvailablePlaces, without their street addresses */
-export function summarizePlaces(places: Array<Record<string, unknown>>): unknown {
-  if (personalInfoEnabled()) return places;
-  return places.map((p) => ({ placeId: p.placeId, name: p.name, role: p.role }));
-}
 
 // ── Response summarizers ───────────────────────────────────────────────
 
@@ -86,10 +40,12 @@ export function summarizeSubsystems(attrs: Record<string, unknown>): unknown {
   }));
 }
 
-export function summarizePerson(attrs: Record<string, unknown>): unknown {
+/** Email and mobile are absent unless FEATURES includes personal_info (see redact.ts) */
+export function summarizePerson(attrs: Record<string, unknown>): Record<string, unknown> {
   return {
     name: `${attrs[Person.ATTR_FIRSTNAME]} ${attrs[Person.ATTR_LASTNAME]}`,
-    ...contactDetails(attrs),
+    email: attrs[Person.ATTR_EMAIL],
+    mobile: attrs[Person.ATTR_MOBILENUMBER],
     place: attrs[Person.ATTR_CURRPLACE],
   };
 }

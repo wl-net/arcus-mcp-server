@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SessionService } from "../capabilities.js";
 import { textResult, request, preflight, blockedMessage, writes, toolRegistrar, type ToolContext } from "./shared.js";
-import { redactPersonal } from "./summarize.js";
 
 export function registerMessageTools(server: McpServer, ctx: ToolContext): void {
   const { client } = ctx;
@@ -37,7 +36,7 @@ export function registerMessageTools(server: McpServer, ctx: ToolContext): void 
       if (messageType === SessionService.CMD_SETACTIVEPLACE && typeof attributes.placeId === "string") {
         client.setActivePlace(attributes.placeId);
       }
-      return textResult(JSON.stringify(redactPersonal(resp.payload)));
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 }

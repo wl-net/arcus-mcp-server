@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { BridgeClient } from "./bridge-client.js";
 import { createEnsureConnected } from "./connection.js";
 import { registerTools } from "./tools.js";
-import { unknownFeatures } from "./tools/shared.js";
+import { Features, parseFeatures } from "./features.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -20,11 +20,9 @@ const AUTH_TOKEN = API_KEY ? undefined : process.env.ARCUS_AUTH_TOKEN;
 const USERNAME = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_USERNAME");
 const PASSWORD = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
 
-for (const name of unknownFeatures()) {
-  process.stderr.write(`[arcus] Unknown feature in FEATURES: ${name}\n`);
-}
+const FEATURES = parseFeatures(process.env.FEATURES);
 
-const bridgeClient = new BridgeClient();
+const bridgeClient = new BridgeClient({ personalInfo: FEATURES.has(Features.PERSONAL_INFO) });
 
 /** Connect to the bridge lazily (on first tool call), or wait out an automatic reconnect. */
 export const ensureConnected = createEnsureConnected(bridgeClient, {

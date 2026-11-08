@@ -69,6 +69,8 @@ claude mcp remove arcus
 | `src/index.ts` | Entry point. Creates MCP server on stdio, lazy bridge connection via `ensureConnected()` |
 | `src/bridge-client.ts` | WebSocket/REST client. Login, correlation-based request/response, event buffering, auto-reconnect |
 | `src/capabilities.ts` | Auto-generated capability constants from Arcus Smart Home platform definitions |
+| `src/features.ts` | Optional features, parsed from `FEATURES` at startup |
+| `src/redact.ts` | Personal details removed from replies and events unless `personal_info` is on |
 | `src/tools/` | The 38 MCP tools (+6 admin), one module per area (places, devices, locks, rules, scenes, alarm, hub, events, messages) |
 | `src/tools/shared.ts` | Write guard, place guard, blocklist, Error-reply handling, annotation presets |
 | `src/tools/summarize.ts` | Response summarizers and Z-Wave node ID decoding |
@@ -162,7 +164,7 @@ Some features are off unless you list them in `FEATURES`, comma-separated. Unkno
 
 | Feature | Turns on |
 |---------|----------|
-| `personal_info` | Email addresses, phone numbers, street addresses, map coordinates and billing details in tool results (see [Personal Info](#personal-info)) |
+| `personal_info` | Email addresses, phone numbers, street addresses, locations and billing details in tool results (see [Personal Info](#personal-info)) |
 
 ## Safety Guards
 
@@ -170,7 +172,7 @@ Some features are off unless you list them in `FEATURES`, comma-separated. Unkno
 All mutating operations require `ARCUS_ENABLE_WRITE=1` (or `true`). Without it, device commands, device identify, alarm control, scene firing, rule creation/deletion, hub reboot, Zigbee scans, and pairing are blocked.
 
 ### Personal Info
-Tool results leave out email addresses, phone numbers, street addresses, map coordinates and billing details unless `FEATURES` includes `personal_info`. `list_places` returns only each place's ID, name and role, `list_persons` and `set_active_place` return names without contact details, and `list_events`, `get_device`, `device_command` and `send_message` drop those attributes from the platform's replies. People's names are still returned, since lock access is granted by person.
+Unless `FEATURES` includes `personal_info`, the server removes personal details from every platform reply and event as it arrives, so no tool returns them, `send_message` included. That covers email addresses, phone numbers, street addresses (including those in place lists and invitations), map coordinates, the home's public IP address and Wi-Fi BSSID, the hub's cellular phone number and SIM identifiers, push notification tokens and billing details. The list is in `src/redact.ts`. People's names are kept, since lock access is granted by person.
 
 ### Place Guard
 Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `device_command`, `list_history`, `list_persons`, `delete_rule`, `fire_scene`, `get_hub`, `reboot_hub`) check that a place is set before making any bridge requests. This prevents "Tsk Tsk, you are not authorized" errors that trigger security alerts on the backend.

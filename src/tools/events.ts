@@ -2,7 +2,6 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { textResult, READ_ONLY, writes, toolRegistrar, type ToolContext } from "./shared.js";
-import { redactPersonal } from "./summarize.js";
 
 export function registerEventTools(server: McpServer, ctx: ToolContext): void {
   const { client, ensureConnected } = ctx;
@@ -49,12 +48,11 @@ export function registerEventTools(server: McpServer, ctx: ToolContext): void {
         }
       }
       // Simplify single-occurrence entries
-      const summary = grouped.map((g) => {
-        const attrs = redactPersonal(g.attributes);
-        return g.count === 1
-          ? { ts: g.firstSeen, type: g.type, src: g.source, attrs }
-          : { type: g.type, src: g.source, n: g.count, from: g.firstSeen, to: g.lastSeen, attrs };
-      });
+      const summary = grouped.map((g) =>
+        g.count === 1
+          ? { ts: g.firstSeen, type: g.type, src: g.source, attrs: g.attributes }
+          : { type: g.type, src: g.source, n: g.count, from: g.firstSeen, to: g.lastSeen, attrs: g.attributes }
+      );
       const careCount = events.length - filtered.length;
       const header = careCount > 0 ? `${filtered.length} events (${careCount} care/safety events filtered):\n` : "";
       return textResult(header + JSON.stringify(summary));

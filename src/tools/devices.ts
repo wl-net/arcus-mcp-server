@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Base, Identify, PairingSubsystem, Place } from "../capabilities.js";
 import { textResult, errorMessage, isErrorResponse, request, preflight, blockedMessage, READ_ONLY, writes, emptyOk, toolRegistrar, type ToolContext } from "./shared.js";
-import { summarizeDevice, redactPersonal } from "./summarize.js";
+import { summarizeDevice } from "./summarize.js";
 
 export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
   const { client } = ctx;
@@ -46,7 +46,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
       const notReady = await preflight(ctx);
       if (notReady) return notReady;
       const resp = await request(client, deviceAddress, Base.CMD_GETATTRIBUTES);
-      return textResult(JSON.stringify(redactPersonal(resp.payload.attributes)));
+      return textResult(JSON.stringify(resp.payload.attributes));
     }
   );
 
@@ -112,7 +112,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
       const notReady = await preflight(ctx, { write: true });
       if (notReady) return notReady;
       const resp = await request(client, deviceAddress, commandName, attributes);
-      return textResult(JSON.stringify(redactPersonal(resp.payload)));
+      return textResult(JSON.stringify(resp.payload));
     }
   );
 
