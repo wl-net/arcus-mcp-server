@@ -40,13 +40,16 @@ export function summarizeSubsystems(attrs: Record<string, unknown>): unknown {
   }));
 }
 
-/** Email and mobile are absent unless FEATURES includes personal_info (see redact.ts) */
+/**
+ * Email and mobile are absent unless FEATURES includes personal_info (see redact.ts).
+ * Leaves out person:currPlace, the place last open in the person's own app, which
+ * isn't the active place and reads as if they belonged somewhere else.
+ */
 export function summarizePerson(attrs: Record<string, unknown>): Record<string, unknown> {
   return {
     name: `${attrs[Person.ATTR_FIRSTNAME]} ${attrs[Person.ATTR_LASTNAME]}`,
     email: attrs[Person.ATTR_EMAIL],
     mobile: attrs[Person.ATTR_MOBILENUMBER],
-    place: attrs[Person.ATTR_CURRPLACE],
   };
 }
 
