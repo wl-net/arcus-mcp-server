@@ -44,6 +44,29 @@ export function envFlag(name: string): boolean {
   return value === "1" || value === "true";
 }
 
+/** Optional features, off unless named in FEATURES (comma-separated, e.g. FEATURES=personal_info) */
+export const Features = {
+  /** Email addresses, phone numbers and street addresses in tool results */
+  PERSONAL_INFO: "personal_info",
+} as const;
+
+export type Feature = (typeof Features)[keyof typeof Features];
+
+const KNOWN_FEATURES = new Set<string>(Object.values(Features));
+
+function featureNames(value: string | undefined): string[] {
+  return (value ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean);
+}
+
+export function hasFeature(feature: Feature): boolean {
+  return featureNames(process.env.FEATURES).includes(feature);
+}
+
+/** Names in FEATURES that aren't features, to warn about at startup */
+export function unknownFeatures(value = process.env.FEATURES): string[] {
+  return featureNames(value).filter((name) => !KNOWN_FEATURES.has(name));
+}
+
 export type ToolError = CallToolResult & { isError: true };
 
 /** Shared state every tool handler needs */

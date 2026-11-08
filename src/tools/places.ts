@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Base, Person, Place, SessionService, Subsystem, SubsystemService } from "../capabilities.js";
 import { textResult, errorResult, checkResponse, request, preflight, attempt, READ_ONLY, writes, toolRegistrar, type ToolContext } from "./shared.js";
-import { summarizeHub, summarizeSubsystems, summarizePerson } from "./summarize.js";
+import { summarizeHub, summarizeSubsystems, summarizePerson, summarizePlaces, contactDetails } from "./summarize.js";
 
 const SESS_DEST = "SERV:sess:";
 
@@ -27,7 +27,8 @@ export function registerPlaceTools(server: McpServer, ctx: ToolContext): void {
       const personId = client.session?.personId;
       if (!personId) return errorResult("Not connected to bridge");
       const resp = await request(client, `SERV:person:${personId}`, Person.CMD_LISTAVAILABLEPLACES);
-      return textResult(JSON.stringify(resp.payload.attributes.places));
+      const places = resp.payload.attributes.places as Array<Record<string, unknown>> | undefined;
+      return textResult(JSON.stringify(places ? summarizePlaces(places) : resp.payload.attributes));
     }
   );
 
@@ -127,8 +128,7 @@ export function registerPlaceTools(server: McpServer, ctx: ToolContext): void {
         ? persons.map((p) => ({
             name: `${p[Person.ATTR_FIRSTNAME]} ${p[Person.ATTR_LASTNAME]}`,
             addr: p[Base.ATTR_ADDRESS],
-            email: p[Person.ATTR_EMAIL],
-            mobile: p[Person.ATTR_MOBILENUMBER],
+            ...contactDetails(p),
             pin: p["person:hasPin"],
           }))
         : resp.payload.attributes;

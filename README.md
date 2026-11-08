@@ -23,6 +23,7 @@ Claude Code <--stdio--> MCP Server <--WebSocket--> Client Bridge <--Kafka--> Arc
 | `ARCUS_AUTH_TOKEN` | No | Skip login, use existing auth token directly |
 | `ARCUS_ENABLE_WRITE` | No | Set to `1` or `true` to enable device commands, alarm control, pairing, etc. Any other value, including `0`, leaves writes off |
 | `ARCUS_ENABLE_ADMIN` | No | Set to `1` or `true` to register the admin hub debug tools |
+| `FEATURES` | No | [Optional features](#optional-features) to turn on, comma-separated, e.g. `personal_info` |
 | `ARCUS_DEBUG` | No | Set to `1` to log all WebSocket traffic to stderr |
 
 *Not required if `ARCUS_AUTH_TOKEN` is set.
@@ -155,10 +156,21 @@ claude mcp remove arcus
 | `hub_agent_db` | Get hub agent database |
 | `hub_files` | Get file listing from the hub |
 
+## Optional Features
+
+Some features are off unless you list them in `FEATURES`, comma-separated. Unknown names are reported on stderr at startup.
+
+| Feature | Turns on |
+|---------|----------|
+| `personal_info` | Email addresses, phone numbers, street addresses, map coordinates and billing details in tool results (see [Personal Info](#personal-info)) |
+
 ## Safety Guards
 
 ### Write Guard
 All mutating operations require `ARCUS_ENABLE_WRITE=1` (or `true`). Without it, device commands, device identify, alarm control, scene firing, rule creation/deletion, hub reboot, Zigbee scans, and pairing are blocked.
+
+### Personal Info
+Tool results leave out email addresses, phone numbers, street addresses, map coordinates and billing details unless `FEATURES` includes `personal_info`. `list_places` returns only each place's ID, name and role, `list_persons` and `set_active_place` return names without contact details, and `list_events`, `get_device`, `device_command` and `send_message` drop those attributes from the platform's replies. People's names are still returned, since lock access is granted by person.
 
 ### Place Guard
 Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `device_command`, `list_history`, `list_persons`, `delete_rule`, `fire_scene`, `get_hub`, `reboot_hub`) check that a place is set before making any bridge requests. This prevents "Tsk Tsk, you are not authorized" errors that trigger security alerts on the backend.

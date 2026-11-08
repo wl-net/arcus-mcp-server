@@ -92,7 +92,7 @@ describe("summarizers", () => {
     assert.equal(hub.id, "ABC-1234");
     assert.equal(hub.security, "OFF");
     assert.deepEqual(summarizePerson({ "person:firstName": "Ada", "person:lastName": "L", "person:email": "a@x" }), {
-      name: "Ada L", email: "a@x", mobile: undefined, place: undefined,
+      name: "Ada L", place: undefined,
     });
     assert.deepEqual(summarizeScene({ "scene:name": "Night", "base:address": "SERV:scene:1", "scene:enabled": false }), {
       name: "Night", addr: "SERV:scene:1", off: true,

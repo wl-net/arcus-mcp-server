@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { BridgeClient } from "./bridge-client.js";
 import { createEnsureConnected } from "./connection.js";
 import { registerTools } from "./tools.js";
+import { unknownFeatures } from "./tools/shared.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -18,6 +19,10 @@ const API_KEY = process.env.ARCUS_API_KEY;
 const AUTH_TOKEN = API_KEY ? undefined : process.env.ARCUS_AUTH_TOKEN;
 const USERNAME = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_USERNAME");
 const PASSWORD = API_KEY || AUTH_TOKEN ? undefined : requireEnv("ARCUS_PASSWORD");
+
+for (const name of unknownFeatures()) {
+  process.stderr.write(`[arcus] Unknown feature in FEATURES: ${name}\n`);
+}
 
 const bridgeClient = new BridgeClient();
 
