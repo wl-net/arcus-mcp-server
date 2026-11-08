@@ -6,7 +6,7 @@ import { FakeBridgeClient, startTools, withEnv, type Harness } from "./tools-har
 // Tool names are part of the public interface (README, docs, client configs)
 const EXPECTED_TOOLS = [
   "list_places", "set_active_place", "list_history", "list_persons", "list_subsystems",
-  "list_devices", "get_device", "get_devices", "device_command", "identify_device", "search_devices",
+  "list_devices", "get_device", "get_devices", "device_command", "identify_device", "start_pairing",
   "doorlock_buzz_in", "doorlock_authorize_person", "doorlock_deauthorize_person",
   "list_rules", "delete_rule", "enable_rule", "disable_rule", "list_rule_templates", "resolve_rule_template", "create_rule",
   "list_scenes", "fire_scene",
@@ -63,7 +63,7 @@ describe("tool annotations", () => {
     for (const name of ["list_devices", "get_device", "get_hub", "list_care_status", "zwave_network_info", "hub_files"]) {
       assert.equal(tools.get(name)!.annotations!.readOnlyHint, true, name);
     }
-    for (const name of ["list_events", "set_active_place", "identify_device", "arm_alarm", "search_devices", "zigbee_scan"]) {
+    for (const name of ["list_events", "set_active_place", "identify_device", "arm_alarm", "start_pairing", "zigbee_scan"]) {
       assert.equal(tools.get(name)!.annotations!.readOnlyHint, false, name);
     }
   });

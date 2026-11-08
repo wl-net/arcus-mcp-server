@@ -92,7 +92,7 @@ claude mcp remove arcus
 | `get_devices` | Batch get — fetches multiple devices in parallel |
 | `device_command` | Send command to a device (switch, lock, dimmer, thermostat, shade, etc.) |
 | `identify_device` | Flash LED or play sound on a device to physically identify it |
-| `search_devices` | Put hub into pairing/search mode for new or reconnecting devices |
+| `start_pairing` | Put the hub into pairing mode for new or reconnecting devices |
 
 ### Door Locks
 | Tool | Description |

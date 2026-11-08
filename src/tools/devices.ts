@@ -135,12 +135,12 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
     }
   );
 
-  // ── search_devices (pairing) ────────────────────────────────────────
+  // ── start_pairing ───────────────────────────────────────────────────
   tool(
-    "search_devices",
+    "start_pairing",
     {
-      title: "Search for devices (pairing)",
-      description: "Put the hub into pairing/search mode to find new or reconnecting devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
+      title: "Start pairing",
+      description: "Put the hub into pairing mode so it listens for new or reconnecting devices. To find devices already paired, use list_devices. Optionally filter by product ID (e.g. \"7b8fd3\" for Iris WaterSensor). Runs StartPairing then Search.",
       inputSchema: {
         productId: z.string().optional().describe("Product catalog ID to search for (e.g. \"7b8fd3\"). Omit to search for all devices."),
       },
