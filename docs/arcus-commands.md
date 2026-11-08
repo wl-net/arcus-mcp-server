@@ -52,7 +52,6 @@ Commands marked with **[MCP]** have a dedicated MCP tool implemented in this ser
 | `person:SetSecurityAnswers` | Set security answers |
 | `person:PromoteToAccount` | Promote person to account owner |
 | `person:DeleteLogin` | Delete login credentials |
-| `person:ChangePin` | **[BLOCKED]** Change PIN |
 | `person:ChangePinV2` | Change PIN (v2) |
 | `person:SetPassword` | **[BLOCKED]** Set password |
 | `person:ChangePassword` | **[BLOCKED]** Change password |

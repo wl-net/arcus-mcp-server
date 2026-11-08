@@ -179,12 +179,12 @@ Unless `FEATURES` includes `personal_info`, the server removes personal details 
 Tools that operate on a place (`list_devices`, `get_device`, `get_devices`, `device_command`, `list_history`, `list_persons`, `delete_rule`, `fire_scene`, `get_hub`, `reboot_hub`) check that a place is set before making any bridge requests. This prevents "Tsk Tsk, you are not authorized" errors that trigger security alerts on the backend.
 
 ### Blocklist
-17 destructive message types are blocked in both `device_command` and `send_message`:
+16 destructive message types are blocked in both `device_command` and `send_message`:
 - Account/place/person deletion and removal
 - Hub deregistration and factory reset
 - Device removal (normal and forced)
 - Scene and rule deletion (rules can still be deleted with the dedicated `delete_rule` tool, which is annotated destructive)
-- Password/PIN changes
+- Password changes
 
 ### Error Replies
 The platform answers a refused or failed request with an `Error` message rather than failing the request. Every tool reports these (and timeouts or a dropped connection) as an MCP error result (`isError: true`) with the platform's message and code, so a refused unlock or disarm never looks like success. `get_devices` reports per-device failures inline instead.

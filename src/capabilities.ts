@@ -55,12 +55,6 @@ export const Account = {
   CMD_REDEEMCOUPON: 'account:RedeemCoupon',
 } as const;
 
-export const AccountMigration = {
-  NAME: 'AccountMigration',
-  NAMESPACE: 'accountmig',
-  CMD_MIGRATEBILLINGACCOUNT: 'accountmig:MigrateBillingAccount',
-} as const;
-
 export const AccountService = {
   NAME: 'AccountService',
   NAMESPACE: 'account',
@@ -272,6 +266,17 @@ export const AOSmithWaterHeaterController = {
   MASTERDISPFAIL_NONE: 'NONE',
   MASTERDISPFAIL_MASTER: 'MASTER',
   MASTERDISPFAIL_DISPLAY: 'DISPLAY',
+} as const;
+
+export const ApiKeyService = {
+  NAME: 'ApiKeyService',
+  NAMESPACE: 'apikey',
+  CMD_CREATE: 'apikey:Create',
+  CMD_LISTKEYS: 'apikey:ListKeys',
+  CMD_REVOKE: 'apikey:Revoke',
+  CMD_DELETE: 'apikey:Delete',
+  EVENT_CREATED: 'apikey:Created',
+  EVENT_REVOKED: 'apikey:Revoked',
 } as const;
 
 export const Atmos = {
@@ -592,6 +597,7 @@ export const DeviceAdvanced = {
   ATTR_HUBLOCAL: 'devadv:hubLocal',
   ATTR_DEGRADED: 'devadv:degraded',
   ATTR_DEGRADEDCODE: 'devadv:degradedCode',
+  ATTR_PROTOCOLATTRS: 'devadv:protocolAttrs',
   DRIVERSTATE_CREATED: 'CREATED',
   DRIVERSTATE_PROVISIONING: 'PROVISIONING',
   DRIVERSTATE_ACTIVE: 'ACTIVE',
@@ -670,6 +676,14 @@ export const DeviceService = {
   NAMESPACE: 'dev',
   CMD_SYNCDEVICES: 'dev:SyncDevices',
   EVENT_DEVICESDEGRADED: 'dev:DevicesDegraded',
+} as const;
+
+export const DeviceSettings = {
+  NAME: 'DeviceSettings',
+  NAMESPACE: 'devsettings',
+  ATTR_PARAMS: 'devsettings:params',
+  CMD_SETPARAM: 'devsettings:SetParam',
+  CMD_GETPARAM: 'devsettings:GetParam',
 } as const;
 
 export const Dimmer = {
@@ -1094,30 +1108,6 @@ export const HubAlarm = {
   EVENT_SECURITYARMING: 'hubalarm:SecurityArming',
   EVENT_SECURITYARMED: 'hubalarm:SecurityArmed',
   EVENT_SECURITYDISARMED: 'hubalarm:SecurityDisarmed',
-} as const;
-
-export const HubAV = {
-  NAME: 'HubAV',
-  NAMESPACE: 'hubav',
-  ATTR_NUMAVAILABLE: 'hubav:numAvailable',
-  ATTR_NUMPAIRED: 'hubav:numPaired',
-  ATTR_NUMDISCONNECTED: 'hubav:numDisconnected',
-  ATTR_AVDEVS: 'hubav:avdevs',
-  CMD_PAIR: 'hubav:pair',
-  CMD_RELEASE: 'hubav:release',
-  CMD_GETSTATE: 'hubav:getState',
-  CMD_GETIPADDRESS: 'hubav:getIPAddress',
-  CMD_GETMODEL: 'hubav:getModel',
-  CMD_AUDIOSTART: 'hubav:audioStart',
-  CMD_AUDIOSTOP: 'hubav:audioStop',
-  CMD_AUDIOPAUSE: 'hubav:audioPause',
-  CMD_AUDIOSEEKTO: 'hubav:audioSeekTo',
-  CMD_SETVOLUME: 'hubav:setVolume',
-  CMD_GETVOLUME: 'hubav:getVolume',
-  CMD_SETMUTE: 'hubav:setMute',
-  CMD_GETMUTE: 'hubav:getMute',
-  CMD_AUDIOINFO: 'hubav:audioInfo',
-  EVENT_AVDEVICEPAIRINGSTATUS: 'hubav:AVDevicePairingStatus',
 } as const;
 
 export const HubBackup = {
@@ -1616,25 +1606,6 @@ export const LightsNSwitchesSubsystem = {
   ATTR_ONDEVICECOUNTS: 'sublightsnswitches:onDeviceCounts',
 } as const;
 
-export const MediaPlayer = {
-  NAME: 'MediaPlayer',
-  NAMESPACE: 'mediaplayer',
-  ATTR_PLAYING: 'mediaplayer:playing',
-  ATTR_GENRE: 'mediaplayer:genre',
-  ATTR_TITLE: 'mediaplayer:title',
-  ATTR_SONG: 'mediaplayer:song',
-  ATTR_ARTIST: 'mediaplayer:artist',
-  ATTR_ALBUM: 'mediaplayer:album',
-  ATTR_MUTED: 'mediaplayer:muted',
-  ATTR_SOURCE: 'mediaplayer:source',
-  ATTR_VOLUME: 'mediaplayer:volume',
-  CMD_PLAY: 'mediaplayer:Play',
-  CMD_PAUSE: 'mediaplayer:Pause',
-  CMD_STOP: 'mediaplayer:Stop',
-  CMD_MUTE: 'mediaplayer:Mute',
-  CMD_UNMUTE: 'mediaplayer:Unmute',
-} as const;
-
 export const MobileDevice = {
   NAME: 'MobileDevice',
   NAMESPACE: 'mobiledevice',
@@ -1809,7 +1780,6 @@ export const Person = {
   CMD_LISTHISTORYENTRIES: 'person:ListHistoryEntries',
   CMD_DELETE: 'person:Delete',
   CMD_REMOVEFROMPLACE: 'person:RemoveFromPlace',
-  CMD_CHANGEPIN: 'person:ChangePin',
   CMD_CHANGEPINV2: 'person:ChangePinV2',
   CMD_VERIFYPIN: 'person:VerifyPin',
   CMD_ACCEPTINVITATION: 'person:AcceptInvitation',
@@ -2784,11 +2754,11 @@ export const WiFiScan = {
 /** Maps namespace prefix to capability/service export name(s). */
 export const NAMESPACE_MAP: Record<string, string> = {
   'account': 'Account',
-  'accountmig': 'AccountMigration',
   'alarm': 'Alarm',
   'alarmservice': 'AlarmService',
   'alert': 'Alert',
   'aosmithwaterheatercontroller': 'AOSmithWaterHeaterController',
+  'apikey': 'ApiKeyService',
   'atmos': 'Atmos',
   'base': 'Base',
   'bridge': 'Bridge',
@@ -2813,6 +2783,7 @@ export const NAMESPACE_MAP: Record<string, string> = {
   'devmock': 'DeviceMock',
   'devota': 'DeviceOta',
   'devpow': 'DevicePower',
+  'devsettings': 'DeviceSettings',
   'dim': 'Dimmer',
   'doorlock': 'DoorLock',
   'eascode': 'EasCodeService',
@@ -2826,7 +2797,6 @@ export const NAMESPACE_MAP: Record<string, string> = {
   'hub4g': 'Hub4g',
   'hubadv': 'HubAdvanced',
   'hubalarm': 'HubAlarm',
-  'hubav': 'HubAV',
   'hubbackup': 'HubBackup',
   'hubbutton': 'HubButton',
   'hubchime': 'HubChime',
@@ -2858,7 +2828,6 @@ export const NAMESPACE_MAP: Record<string, string> = {
   'keypad': 'KeyPad',
   'leakh2o': 'LeakH2O',
   'light': 'Light',
-  'mediaplayer': 'MediaPlayer',
   'mobiledevice': 'MobileDevice',
   'mot': 'Motion',
   'motdoor': 'MotorizedDoor',

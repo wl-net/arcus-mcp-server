@@ -21,7 +21,6 @@ export const BLOCKED_MESSAGE_TYPES = new Set([
   "place:RemovePerson",
   Person.CMD_DELETE,
   Person.CMD_REMOVEFROMPLACE,
-  Person.CMD_CHANGEPIN,
   "person:SetPassword",
   PersonService.CMD_CHANGEPASSWORD,
   Device.CMD_REMOVE,
